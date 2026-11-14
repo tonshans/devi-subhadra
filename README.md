@@ -1,3 +1,5 @@
+![Devi Subhadra](assets/devi_subhadra_2d_vector.jpeg)
+
 # Devi-Subhadra: Autonomous Cognitive Agent Framework
 
 > *"Building a Digital Coworker with Persistence, Continuous Learning, and Regulated Creativity."*
@@ -85,4 +87,5 @@ cp .env.example .env   # isi token & API key
 - Sandbox saat ini subprocess + allowlist AST, bukan LXC. Jangan jalankan kode tak tepercaya sampai isolasi host tersedia.
 
 ---
+![Devi Subhadra landscape](assets/devi_subhadra_landscape.jpeg)
 *Dibangun dengan dedikasi di bawah filosofi bahwa sistem AI modern tidak seharusnya bertindak hanya sebagai kalkulator yang dipercantik, melainkan sebuah mitra sintetik yang persisten dan terus berproses.*
