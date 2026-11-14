@@ -1,0 +1,30 @@
+agent_name: "devi-subhadra"
+execution_mode: "lxc" # Enum: "lxc" | "local"
+db_type: "sqlite" # Enum: "sqlite" | "postgres"
+sqlite_path: "./data/devi_subhadra.db"
+postgres_dsn: "postgresql+asyncpg://user:change_me@localhost:5432/devi_subhadra"
+
+budget:
+  max_initiative_budget_usd: 2.50
+  core_task_ratio: 0.70
+  atelier_ratio: 0.30
+
+rate_limits:
+  provider: "openrouter" # Enum: "gemini" | "openrouter"
+  rpm_limit: 60
+  tpm_limit: 120000
+  throttle_threshold_ratio: 0.90
+  max_context_tokens: 30000
+
+models:
+  tier_1_light: "google/gemini-2.5-flash"
+  tier_2_heavy: "anthropic/claude-3.7-sonnet"
+
+paths:
+  workspace_dir: "./mnt/workspace"
+  atelier_dir: "./mnt/agent_atelier"
+
+# Set real provider rates before enabling budget enforcement; 0.0 = flat cost.
+pricing:
+  input_usd_per_million: 0.0
+  output_usd_per_million: 0.0
