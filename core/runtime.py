@@ -92,6 +92,7 @@ class Runtime:
         output_usd_per_million: float = 0.0,
         memory: MemoryManager | None = None,
         monologue: InnerMonologue | None = None,
+        monologue_every_cycles: int = 1,
         wake_up: Optional[Callable[[], bool]] = None,
         initiative: Optional[Initiative] = None,
         deliver_file: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -113,6 +114,8 @@ class Runtime:
         self._output_rate = output_usd_per_million
         self._memory = memory or MemoryManager(ledger)
         self._monologue = monologue or InnerMonologue(governor)
+        self._monologue_every_cycles = max(1, monologue_every_cycles)
+        self._tick_count = 0
         self._wake_up = wake_up
         self._initiative = initiative or self._default_initiative
         self._deliver_file = deliver_file
@@ -410,6 +413,9 @@ class Runtime:
             return None
         if self._wake_up is not None:
             self._wake_up()
+        self._tick_count += 1
+        if self._tick_count % self._monologue_every_cycles:
+            return None
         return await self._monologue.run_cycle(
             self._initiative_cost, self._initiative
         )

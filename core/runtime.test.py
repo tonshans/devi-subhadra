@@ -367,6 +367,33 @@ def test_scheduled_tick_pings_wake_up_and_runs_initiative(tmp_path):
     asyncio.run(scenario())
 
 
+def test_scheduled_tick_runs_monologue_only_every_n_cycles(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        initiatives = []
+
+        async def initiative():
+            initiatives.append(True)
+            return "slept"
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            worker=None,
+            initiative=initiative,
+            monologue_every_cycles=3,
+        )
+
+        assert await runtime.scheduled_tick() is None
+        assert await runtime.scheduled_tick() is None
+        assert initiatives == []
+
+        assert await runtime.scheduled_tick() == "slept"
+        assert initiatives == [True]
+
+    asyncio.run(scenario())
+
+
 def test_scheduled_tick_is_blocked_by_kill_switch(tmp_path):
     async def scenario():
         ledger, governor = await _setup(tmp_path)

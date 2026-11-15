@@ -97,6 +97,23 @@ def test_pricing_parses_provider_rates(tmp_path):
     assert config.pricing.output_usd_per_million == 1.50
 
 
+def test_monologue_every_cycles_defaults_to_one_and_accepts_positive(tmp_path):
+    assert load_config(_write_config(tmp_path, _valid_config())).monologue_every_cycles == 1
+
+    data = _valid_config()
+    data["monologue_every_cycles"] = 5
+
+    assert load_config(_write_config(tmp_path, data)).monologue_every_cycles == 5
+
+
+def test_monologue_every_cycles_rejects_zero(tmp_path):
+    data = _valid_config()
+    data["monologue_every_cycles"] = 0
+
+    with pytest.raises(ConfigValidationError):
+        load_config(_write_config(tmp_path, data))
+
+
 def test_bundled_config_yaml_matches_spec():
     config = load_config()
 

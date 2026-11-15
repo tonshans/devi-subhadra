@@ -123,6 +123,14 @@ rate_limits:
 - `budget_ratio_agent: 0` memblokir semua inisiatif agent (bukan unlimited). Nilai ratio/freetime yang diubah lewat command disimpan di `system_state` dan menimpa `config.yaml` saat startup.
 - Pemakaian menit/hari disimpan di tabel `rate_limit_usage` sehingga bertahan setelah restart; snapshot lama tanpa tabel tersebut tetap bisa direstore.
 
+### Jadwal InnerMonologue
+
+Scheduler berjalan tiap 60 detik. `monologue_every_cycles` menentukan berapa tick sebelum satu siklus InnerMonologue dijalankan; nilai `5` berarti tiap 5 menit. Cek budget, pause, dan wake-up tetap tiap tick.
+
+```yaml
+monologue_every_cycles: 5
+```
+
 ### Multi-key Gemini (Failover)
 
 Provider Gemini mencoba key berurutan, key pertama (utama) didahulukan. Secret tetap di `.env`; `config.yaml` hanya menyimpan id, nama env, dan limit per key:

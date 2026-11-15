@@ -90,6 +90,8 @@ class AppConfig(StrictConfig):
     postgres_dsn: str = ""
     fallback_sqlite: bool = True
     fallback_sqlite_path: str = Field(default="./data/devi_subhadra.db", min_length=1)
+    # Run one InnerMonologue initiative every N scheduler ticks (60s each).
+    monologue_every_cycles: int = Field(default=1, ge=1)
     budget: BudgetConfig
     rate_limits: RateLimitsConfig
     models: ModelsConfig

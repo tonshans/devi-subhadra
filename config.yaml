@@ -6,6 +6,8 @@ sqlite_path: "./data/devi_subhadra.db"
 postgres_dsn: ""
 fallback_sqlite: true
 fallback_sqlite_path: "./data/devi_subhadra.db"
+# InnerMonologue runs once every N scheduler ticks (60s each); 5 = every 5 minutes.
+monologue_every_cycles: 5
 
 budget:
   max_initiative_budget_usd: 2.50

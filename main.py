@@ -142,6 +142,7 @@ def build_runtime(
         worker=worker,
         propose_patch=propose_patch,
         wake_up=gateway.wake_up_ping,
+        monologue_every_cycles=settings.monologue_every_cycles,
         input_usd_per_million=settings.pricing.input_usd_per_million,
         output_usd_per_million=settings.pricing.output_usd_per_million,
         deliver_file=deliver_file,
