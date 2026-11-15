@@ -2,7 +2,10 @@ agent_name: "devi-subhadra"
 execution_mode: "lxc" # Enum: "lxc" | "local"
 db_type: "sqlite" # Enum: "sqlite" | "postgres"
 sqlite_path: "./data/devi_subhadra.db"
-postgres_dsn: "postgresql+asyncpg://user:change_me@localhost:5432/devi_subhadra"
+# Leave empty and put the real DSN in .env as POSTGRES_DSN.
+postgres_dsn: ""
+fallback_sqlite: true
+fallback_sqlite_path: "./data/devi_subhadra.db"
 
 budget:
   max_initiative_budget_usd: 2.50
@@ -10,15 +13,37 @@ budget:
   atelier_ratio: 0.30
 
 rate_limits:
-  provider: "openrouter" # Enum: "gemini" | "openrouter"
+  provider: "gemini" # Enum: "gemini" | "openrouter"
+  # 0 = unlimited. Global limits cover every request (human + agent).
   rpm_limit: 60
   tpm_limit: 120000
+  rpd_limit: 1000
+  tpd_limit: 2000000
+  # Agent initiatives may only use this share of each limit; 1.0 = full limit.
+  budget_ratio_agent: 0.40
+  agent_freetime: false # true lets initiatives use the full global limit
   throttle_threshold_ratio: 0.90
   max_context_tokens: 30000
 
+# Gemini keys tried in order; only the env NAME is here, secrets stay in .env.
+# 0 = unlimited for that key. Keep total timeouts under supervisor_timeout_seconds.
+gemini_keys:
+  - id: "primary"
+    env: "GEMINI_API_KEY_PRIMARY"
+    rpm_limit: 15
+    tpm_limit: 1000000
+    rpd_limit: 1500
+    tpd_limit: 10000000
+  - id: "secondary"
+    env: "GEMINI_API_KEY_SECONDARY"
+    rpm_limit: 15
+    tpm_limit: 1000000
+    rpd_limit: 1500
+    tpd_limit: 10000000
+
 models:
-  tier_1_light: "google/gemini-2.5-flash"
-  tier_2_heavy: "anthropic/claude-3.7-sonnet"
+  tier_1_light: "gemini-2.5-flash"
+  tier_2_heavy: "gemini-2.5-flash"
 
 paths:
   workspace_dir: "./mnt/workspace"
@@ -28,3 +53,9 @@ paths:
 pricing:
   input_usd_per_million: 0.0
   output_usd_per_million: 0.0
+
+# Only used when db_type is postgres; snapshots are incremental (is_backup flag).
+backup:
+  enabled: true
+  interval_seconds: 3600
+  sqlite_path: "./data/backups/devi_subhadra.db"

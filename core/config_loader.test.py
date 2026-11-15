@@ -20,7 +20,7 @@ def _valid_config() -> dict:
         "execution_mode": "lxc",
         "db_type": "sqlite",
         "sqlite_path": "./data/devi_subhadra.db",
-        "postgres_dsn": "postgresql+asyncpg://user:pass@localhost:5432/devi_subhadra",
+        "postgres_dsn": "postgresql+psycopg://user:pass@localhost:5432/devi_subhadra",
         "budget": {
             "max_initiative_budget_usd": 2.50,
             "core_task_ratio": 0.70,
@@ -103,6 +103,59 @@ def test_bundled_config_yaml_matches_spec():
     assert config.execution_mode in {"lxc", "local"}
     assert config.db_type in {"sqlite", "postgres"}
     assert config.rate_limits.provider in {"gemini", "openrouter"}
+    assert config.rate_limits.rpd_limit == 1000
+    assert config.rate_limits.tpd_limit == 2000000
+    assert config.rate_limits.budget_ratio_agent == 0.40
+    assert config.rate_limits.agent_freetime is False
+
+
+def test_rate_limits_accept_zero_and_reject_bad_agent_ratio(tmp_path):
+    data = _valid_config()
+    data["rate_limits"].update(
+        {
+            "rpd_limit": 0,
+            "tpd_limit": 0,
+            "budget_ratio_agent": 0.25,
+            "agent_freetime": True,
+        }
+    )
+
+    config = load_config(_write_config(tmp_path, data))
+
+    assert config.rate_limits.rpd_limit == 0
+    assert config.rate_limits.budget_ratio_agent == 0.25
+    assert config.rate_limits.agent_freetime is True
+
+    data["rate_limits"]["budget_ratio_agent"] = 1.5
+    with pytest.raises(ConfigValidationError):
+        load_config(_write_config(tmp_path, data))
+
+
+def test_gemini_keys_parse_and_require_unique_ids(tmp_path):
+    data = _valid_config()
+    data["rate_limits"]["provider"] = "gemini"
+    data["gemini_keys"] = [
+        {"id": "primary", "env": "GEMINI_API_KEY_PRIMARY", "rpm_limit": 15},
+        {"id": "secondary", "env": "GEMINI_API_KEY_SECONDARY"},
+    ]
+
+    config = load_config(_write_config(tmp_path, data))
+
+    assert [key.id for key in config.gemini_keys] == ["primary", "secondary"]
+    assert config.gemini_keys[0].rpm_limit == 15
+    assert config.gemini_keys[1].tpd_limit == 0
+
+    data["gemini_keys"][1]["id"] = "primary"
+    with pytest.raises(ConfigValidationError):
+        load_config(_write_config(tmp_path, data))
+
+
+def test_gemini_provider_requires_keys(tmp_path):
+    data = _valid_config()
+    data["rate_limits"]["provider"] = "gemini"
+
+    with pytest.raises(ConfigValidationError):
+        load_config(_write_config(tmp_path, data))
 
 
 def test_rejects_invalid_enum(tmp_path):

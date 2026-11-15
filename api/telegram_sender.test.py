@@ -66,3 +66,46 @@ def test_raises_on_http_error_without_leaking_token():
             assert "secret-token" not in str(error.value)
 
     asyncio.run(scenario())
+
+
+def test_send_document_posts_multipart(tmp_path):
+    seen = []
+    document = tmp_path / "laporan.txt"
+    document.write_text("isi laporan", encoding="utf-8")
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("secret-token", client=client)
+            await sender.send_document(42, document, caption="ini file")
+
+    asyncio.run(scenario())
+
+    assert seen[0].url.path == "/botsecret-token/sendDocument"
+    assert "multipart/form-data" in seen[0].headers["content-type"]
+    body = seen[0].content
+    assert b'name="chat_id"' in body
+    assert b"42" in body
+    assert b'name="document"; filename="laporan.txt"' in body
+    assert b"isi laporan" in body
+    assert b"ini file" in body
+
+
+def test_send_document_does_not_leak_token_on_error(tmp_path):
+    document = tmp_path / "laporan.txt"
+    document.write_text("isi", encoding="utf-8")
+
+    def handler(request):
+        return httpx.Response(401, json={"ok": False, "description": "unauthorized"})
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("secret-token", client=client)
+            with pytest.raises(RuntimeError, match="HTTP 401") as error:
+                await sender.send_document(1, document)
+            assert "secret-token" not in str(error.value)
+
+    asyncio.run(scenario())

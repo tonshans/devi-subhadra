@@ -5,8 +5,17 @@ from __future__ import annotations
 from typing import Optional
 
 import httpx
+from pydantic import ValidationError
+
+from core.schemas import MissionReply
 
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
+STRUCTURED_INSTRUCTION = (
+    'Reply ONLY as JSON: {"reply": "<text for the user>", '
+    '"files": ["<local file path inside workspace or atelier>"]}. '
+    "Use an empty files list when no file should be sent."
+)
 
 
 class OpenRouterWorker:
@@ -17,12 +26,14 @@ class OpenRouterWorker:
         client: Optional[httpx.AsyncClient] = None,
         endpoint: str = DEFAULT_ENDPOINT,
         timeout: float = 120,
+        structured: bool = False,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._client = client
         self._endpoint = endpoint
         self._timeout = timeout
+        self._structured = structured
         # Set per call from the response `usage` block; None when absent.
         self.last_usage: Optional[dict] = None
 
@@ -35,14 +46,14 @@ class OpenRouterWorker:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             return await client.post(self._endpoint, json=payload, headers=headers)
 
-    async def __call__(self, prompt: str) -> str:
+    async def __call__(self, prompt: str) -> str | MissionReply:
         self.last_usage = None
-        response = await self._post(
-            {
-                "model": self._model,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        )
+        messages = [{"role": "user", "content": prompt}]
+        payload = {"model": self._model, "messages": messages}
+        if self._structured:
+            messages.insert(0, {"role": "system", "content": STRUCTURED_INSTRUCTION})
+            payload["response_format"] = {"type": "json_object"}
+        response = await self._post(payload)
         response.raise_for_status()
         try:
             data = response.json()
@@ -60,4 +71,81 @@ class OpenRouterWorker:
             if isinstance(usage, dict)
             else None
         )
+        if self._structured:
+            try:
+                return MissionReply.model_validate_json(content)
+            except ValidationError as exc:
+                raise RuntimeError(
+                    "OpenRouter response is not a valid MissionReply"
+                ) from exc
+        return content
+
+
+class GeminiWorker:
+    """Gemini generateContent worker; same call contract as OpenRouterWorker."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        client: Optional[httpx.AsyncClient] = None,
+        endpoint: str = GEMINI_ENDPOINT,
+        timeout: float = 120,
+        structured: bool = False,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._client = client
+        self._endpoint = endpoint
+        self._timeout = timeout
+        self._structured = structured
+        self.last_usage: Optional[dict] = None
+
+    def _url(self) -> str:
+        return f"{self._endpoint}/{self._model}:generateContent"
+
+    async def _post(self, payload: dict) -> httpx.Response:
+        # Keep the key in a header so it never lands in the request URL or logs.
+        headers = {"x-goog-api-key": self._api_key}
+        if self._client is not None:
+            return await self._client.post(self._url(), json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            return await client.post(self._url(), json=payload, headers=headers)
+
+    async def __call__(self, prompt: str) -> str | MissionReply:
+        self.last_usage = None
+        payload: dict = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}]
+        }
+        if self._structured:
+            payload["systemInstruction"] = {
+                "parts": [{"text": STRUCTURED_INSTRUCTION}]
+            }
+            payload["generationConfig"] = {"responseMimeType": "application/json"}
+        response = await self._post(payload)
+        response.raise_for_status()
+        try:
+            data = response.json()
+            parts = data["candidates"][0]["content"]["parts"]
+            content = "".join(part.get("text", "") for part in parts)
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                "Gemini response missing candidates[0].content.parts"
+            ) from exc
+        usage = data.get("usageMetadata")
+        self.last_usage = (
+            {
+                "prompt_tokens": int(usage.get("promptTokenCount", 0)),
+                "completion_tokens": int(usage.get("candidatesTokenCount", 0)),
+            }
+            if isinstance(usage, dict)
+            else None
+        )
+        if self._structured:
+            try:
+                return MissionReply.model_validate_json(content)
+            except ValidationError as exc:
+                raise RuntimeError(
+                    "Gemini response is not a valid MissionReply"
+                ) from exc
         return content

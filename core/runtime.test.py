@@ -8,7 +8,9 @@ import pytest
 
 from core.budget_governor import BudgetGovernor
 from core.cognitive_ledger import CognitiveLedger
+from core.provider_pool import AllProvidersUnavailable
 from core.runtime import MissionBlockedError, Runtime, load_plugins, scheduler_loop
+from core.schemas import MissionReply
 
 
 async def _setup(tmp_path):
@@ -47,6 +49,102 @@ def test_mission_flows_through_context_budget_and_ledger(tmp_path):
         entries = await ledger.list_ledger_entries(thread_id)
         assert entries[-1]["tag"] == "FAKTA"
         assert entries[-1]["content"] == "hasil akhir"
+
+    asyncio.run(scenario())
+
+
+def test_all_providers_down_notifies_once_and_replies(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        notices = []
+        flags = [True, False]
+
+        async def worker(prompt):
+            raise AllProvidersUnavailable(
+                "All Gemini API keys are unavailable.",
+                should_notify=flags.pop(0),
+            )
+
+        async def notify(message):
+            notices.append(message)
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        first = await runtime.handle_mission(thread_id, "halo")
+        second = await runtime.handle_mission(thread_id, "halo")
+
+        assert first == "All Gemini API keys are unavailable."
+        assert second == "All Gemini API keys are unavailable."
+        assert notices == ["All Gemini API keys are unavailable."]
+        entries = await ledger.list_ledger_entries(thread_id)
+        assert entries[-1]["content"] == "All Gemini API keys are unavailable."
+
+    asyncio.run(scenario())
+
+
+def test_mission_delivers_files_from_structured_reply(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        delivered = []
+
+        async def worker(prompt):
+            return MissionReply(reply="laporan siap", files=["laporan.txt"])
+
+        async def deliver_file(path):
+            delivered.append(path)
+
+        runtime = Runtime(
+            ledger, governor, worker=worker, deliver_file=deliver_file
+        )
+
+        reply = await runtime.handle_mission(thread_id, "kirim laporan")
+
+        assert reply == "laporan siap"
+        assert delivered == ["laporan.txt"]
+        entries = await ledger.list_ledger_entries(thread_id)
+        assert entries[-1]["content"] == "laporan siap"
+
+    asyncio.run(scenario())
+
+
+def test_file_delivery_failure_is_reported_in_reply(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+
+        async def worker(prompt):
+            return MissionReply(reply="laporan siap", files=["hilang.txt"])
+
+        async def deliver_file(path):
+            raise ValueError("file not found")
+
+        runtime = Runtime(
+            ledger, governor, worker=worker, deliver_file=deliver_file
+        )
+
+        reply = await runtime.handle_mission(thread_id, "kirim laporan")
+
+        assert reply.startswith("laporan siap")
+        assert "File not sent (hilang.txt): file not found" in reply
+
+    asyncio.run(scenario())
+
+
+def test_structured_file_without_delivery_is_reported(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+
+        async def worker(prompt):
+            return MissionReply(reply="laporan siap", files=["laporan.txt"])
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        reply = await runtime.handle_mission(thread_id, "kirim laporan")
+
+        assert "file delivery is not configured" in reply
 
     asyncio.run(scenario())
 
@@ -173,6 +271,8 @@ def test_worker_timeout_is_healed_and_reported(tmp_path):
 
         assert reply == "Recovered after 1 attempt(s)"
         assert len(calls) == 2
+        # Both the failed attempt and the healed retry are provider requests.
+        assert governor.used("rpm") == 2
 
     asyncio.run(scenario())
 
@@ -267,6 +367,32 @@ def test_scheduled_tick_pings_wake_up_and_runs_initiative(tmp_path):
     asyncio.run(scenario())
 
 
+def test_scheduled_tick_is_blocked_by_kill_switch(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        initiatives = []
+
+        async def initiative():
+            initiatives.append(True)
+            return "slept"
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            worker=None,
+            wake_up=lambda: True,
+            initiative=initiative,
+        )
+        await ledger.set_system_state("kill_switch", "1")
+
+        result = await runtime.scheduled_tick()
+
+        assert result is None
+        assert initiatives == []
+
+    asyncio.run(scenario())
+
+
 def test_scheduler_loop_logs_a_failed_tick_and_keeps_going(caplog):
     async def scenario():
         ticks = []
@@ -304,5 +430,106 @@ def test_scheduler_loop_keeps_ticking_until_cancelled():
             await task
 
         assert len(ticks) >= 2
+
+    asyncio.run(scenario())
+
+
+def test_global_limit_pauses_everything_and_explains(tmp_path):
+    async def scenario():
+        ledger = CognitiveLedger(tmp_path / "ledger.db")
+        await ledger.initialize()
+        governor = BudgetGovernor(1.00, rpm_limit=1)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        reply = await runtime.handle_mission(thread_id, "halo")
+        assert "Agent paused: RPM limit 1/1 reached." in reply
+        assert await ledger.get_system_state("kill_switch") == "1"
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Paused"
+
+        with pytest.raises(MissionBlockedError):
+            await runtime.handle_mission(thread_id, "halo lagi")
+
+        assert len(calls) == 1
+        assert "RPM" in await runtime.pause_notice()
+
+    asyncio.run(scenario())
+
+
+def test_agent_share_pauses_only_agent_threads(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        governor.set_budget_ratio_agent(0.5)  # rpm cap = 30
+        governor.record_api_usage(30, side="AGENT")
+        agent_thread = await ledger.create_thread("Initiative", "AGENT")
+        human_thread = await ledger.create_thread("Mission A", "HUMAN")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        agent_reply = await runtime.handle_mission(agent_thread, "belajar")
+        assert "Agent initiative paused" in agent_reply
+        assert (await ledger.read("ledger_threads", agent_thread))["status"] == "Paused"
+        assert await ledger.get_system_state("kill_switch") != "1"
+
+        human_reply = await runtime.handle_mission(human_thread, "halo")
+
+        assert human_reply == "ok"
+        assert len(calls) == 1
+        assert (await ledger.read("ledger_threads", human_thread))["status"] == "Active"
+
+    asyncio.run(scenario())
+
+
+def test_auto_resume_lifts_rate_limit_pause_after_its_window(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        await ledger.set_system_state("kill_switch", "1")
+        await ledger.set_system_state("pause_reason", "rate_limit:RPM")
+        await ledger.set_system_state("pause_until", "2000-01-01T00:00:00Z")
+        await ledger.pause_active_threads()
+
+        async def worker(prompt):
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        reply = await runtime.handle_mission(thread_id, "halo")
+
+        assert reply == "ok"
+        assert await ledger.get_system_state("kill_switch") == "0"
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Active"
+
+    asyncio.run(scenario())
+
+
+def test_manual_pause_is_not_auto_resumed(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        await ledger.set_system_state("kill_switch", "1")
+        await ledger.set_system_state("pause_reason", "manual")
+        await ledger.set_system_state("pause_until", "2000-01-01T00:00:00Z")
+
+        async def worker(prompt):
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        with pytest.raises(MissionBlockedError):
+            await runtime.handle_mission(thread_id, "halo")
+
+        assert await ledger.get_system_state("kill_switch") == "1"
 
     asyncio.run(scenario())

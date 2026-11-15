@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create the LXC "agent world": UID/GID mapping, bind mounts, and Genesis DB seed.
+# Create the LXC "agent world": UID/GID mapping, bind mounts, Playwright setup, and Genesis DB seed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,17 +41,17 @@ for command in lxc-create lxc-start lxc-info; do
   }
 done
 
-echo "[1/5] Preparing host directories"
+echo "[1/6] Preparing host directories"
 install -d -o "$HOST_UID" -g "$HOST_GID" -m 0755 \
   "$WORKSPACE_DIR" "$ATELIER_DIR" "$DATA_DIR"
 
-echo "[2/5] Creating container '$CONTAINER_NAME' (if missing)"
+echo "[2/6] Creating container '$CONTAINER_NAME' (if missing)"
 if [[ ! -d "$LXC_PATH/$CONTAINER_NAME" ]]; then
   lxc-create -n "$CONTAINER_NAME" -t download -- \
     -d "$DISTRO" -r "$RELEASE" -a "$ARCH"
 fi
 
-echo "[3/5] Applying UID/GID mapping and bind mounts"
+echo "[3/6] Applying UID/GID mapping and bind mounts"
 CONFIG_FILE="$LXC_PATH/$CONTAINER_NAME/config"
 sed -i '/# BEGIN devi-subhadra/,/# END devi-subhadra/d' "$CONFIG_FILE"
 cat >> "$CONFIG_FILE" <<EOF
@@ -68,7 +68,7 @@ lxc.apparmor.profile = generated
 # END devi-subhadra
 EOF
 
-echo "[4/5] Starting container"
+echo "[4/6] Starting container"
 if ! lxc-info -n "$CONTAINER_NAME" -s 2>/dev/null | grep -q RUNNING; then
   lxc-start -n "$CONTAINER_NAME"
 fi
@@ -81,7 +81,13 @@ lxc-info -n "$CONTAINER_NAME" -s | grep -q RUNNING || {
   exit 1
 }
 
-echo "[5/5] Seeding Genesis DB at $DB_PATH"
+echo "[5/6] Installing Playwright Chromium browser"
+# Memastikan library browser untuk HeadlessBrowserPlugin tersedia
+if ! "$PYTHON_BIN" -m playwright install chromium; then
+    echo "WARNING: Failed to install Playwright browser. Did you run 'uv sync' first?" >&2
+fi
+
+echo "[6/6] Seeding Genesis DB at $DB_PATH"
 "$PYTHON_BIN" - "$PROJECT_ROOT" "$DB_PATH" "${AGENT_VISION:-Become a transparent digital coworker.}" <<'PY'
 import asyncio
 import sys

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from api.telegram_gateway import MAX_CHUNK_CHARS
 
 DEFAULT_API_BASE = "https://api.telegram.org"
+UPLOAD_TIMEOUT = 120
 
 
 class TelegramSender:
@@ -48,4 +50,42 @@ class TelegramSender:
         if not body.get("ok", False):
             raise RuntimeError(
                 f"Telegram rejected message: {body.get('description', 'unknown error')}"
+            )
+
+    async def send_document(
+        self, chat_id: int, path: str | Path, caption: Optional[str] = None
+    ) -> None:
+        document = Path(path)
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        url = f"{self._api_base}/bot{self._token}/sendDocument"
+        try:
+            with document.open("rb") as handle:
+                files = {"document": (document.name, handle)}
+                if self._client is not None:
+                    response = await self._client.post(url, data=data, files=files)
+                else:
+                    async with httpx.AsyncClient(
+                        timeout=max(self._timeout, UPLOAD_TIMEOUT)
+                    ) as client:
+                        response = await client.post(url, data=data, files=files)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Telegram API HTTP {exc.response.status_code}"
+            ) from None
+        except httpx.HTTPError as exc:
+            # The bot token lives in the URL; never forward httpx errors verbatim.
+            raise RuntimeError(
+                f"Telegram API request failed: {type(exc).__name__}"
+            ) from None
+        try:
+            body = response.json()
+        except ValueError:
+            raise RuntimeError("Telegram API returned invalid JSON") from None
+        if not body.get("ok", False):
+            raise RuntimeError(
+                f"Telegram rejected document: "
+                f"{body.get('description', 'unknown error')}"
             )
