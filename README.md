@@ -1,4 +1,4 @@
-![Devi Subhadra](assets/devi_subhadra_2d_vector.jpeg)
+![Devi Subhadra](assets/devi_subhadra_2d_vector_small.jpg)
 
 # Devi-Subhadra: Autonomous Cognitive Agent Framework
 
@@ -178,5 +178,5 @@ python -m scripts.db_sync restore --yes
 - Database SQLite lama: hentikan agen, lalu jalankan `python user_tools/migrate-is-backup.py --db ./data/devi_subhadra.db` (idempoten, otomatis membuat `.bak`). Untuk skema PostgreSQL lama, pakai `--dsn "$POSTGRES_DSN"` setelah `pg_dump` sendiri.
 
 ---
-![Devi Subhadra landscape](assets/devi_subhadra_landscape.jpeg)
+![Devi Subhadra landscape](assets/devi_subhadra_landscape_small.jpg)
 *Dibangun dengan dedikasi di bawah filosofi bahwa sistem AI modern tidak seharusnya bertindak hanya sebagai kalkulator yang dipercantik, melainkan sebuah mitra sintetik yang persisten dan terus berproses.*
