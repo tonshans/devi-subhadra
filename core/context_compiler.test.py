@@ -5,14 +5,28 @@ import asyncio
 import pytest
 
 from core.cognitive_ledger import CognitiveLedger
-from core.context_compiler import CompiledContext, ContextCompiler
+from core.context_compiler import EPISTEMIC_WARNING, CompiledContext, ContextCompiler
 
 
-async def _setup(tmp_path, max_context_tokens=30000):
+async def _setup(tmp_path, max_context_tokens=30000, vector_store=None):
     ledger = CognitiveLedger(tmp_path / "ledger.db")
     await ledger.initialize()
-    compiler = ContextCompiler(ledger, max_context_tokens=max_context_tokens)
+    compiler = ContextCompiler(
+        ledger,
+        max_context_tokens=max_context_tokens,
+        vector_store=vector_store,
+    )
     return ledger, compiler
+
+
+class FakeVectorStore:
+    def __init__(self, rows=None):
+        self.rows = rows or []
+        self.queries = []
+
+    def query(self, text, k=5):
+        self.queries.append(text)
+        return self.rows[:k]
 
 
 def test_preflight_token_estimator_counts_with_tiktoken(tmp_path):
@@ -223,5 +237,159 @@ def test_compiler_default_limit_matches_config_spec(tmp_path):
         compiler = ContextCompiler(ledger, max_context_tokens=30000)
 
         assert compiler.max_context_tokens == 30000
+
+    asyncio.run(scenario())
+
+def test_community_opinion_recall_injects_the_epistemic_warning(tmp_path):
+    async def scenario():
+        store = FakeVectorStore(
+            [
+                {
+                    "id": "d-1",
+                    "document": "Reddit says asyncio is slow.",
+                    "metadata": {
+                        "source": "atelier",
+                        "epistemic_tag": "COMMUNITY_OPINION",
+                        "credibility_score": 50,
+                    },
+                    "distance": 0.2,
+                }
+            ]
+        )
+        ledger, compiler = await _setup(tmp_path, vector_store=store)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+
+        context = await compiler.compile_context(
+            thread_id, "is asyncio slow?", rpm_pressure_high=False
+        )
+
+        assert store.queries == ["is asyncio slow?"]
+        assert len(context.long_term) == 1
+        assert "LONG-TERM SEMANTIC RECALL:" in context.prompt
+        assert EPISTEMIC_WARNING in context.prompt
+        assert "Reddit says asyncio is slow." in context.prompt
+
+    asyncio.run(scenario())
+
+
+def test_verified_fact_with_high_credibility_has_no_warning(tmp_path):
+    async def scenario():
+        store = FakeVectorStore(
+            [
+                {
+                    "id": "d-2",
+                    "document": "Python docs confirm asyncio is fine.",
+                    "metadata": {
+                        "source": "atelier",
+                        "epistemic_tag": "VERIFIED_FACT",
+                        "credibility_score": 95,
+                    },
+                    "distance": 0.1,
+                }
+            ]
+        )
+        ledger, compiler = await _setup(tmp_path, vector_store=store)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+
+        context = await compiler.compile_context(
+            thread_id, "check the docs", rpm_pressure_high=False
+        )
+
+        assert "Python docs confirm asyncio is fine." in context.prompt
+        assert EPISTEMIC_WARNING not in context.prompt
+
+    asyncio.run(scenario())
+
+
+def test_low_credibility_triggers_warning_even_with_verified_tag(tmp_path):
+    async def scenario():
+        store = FakeVectorStore(
+            [
+                {
+                    "id": "d-3",
+                    "document": "Unclear source claim.",
+                    "metadata": {
+                        "source": "atelier",
+                        "epistemic_tag": "VERIFIED_FACT",
+                        "credibility_score": 50,
+                    },
+                    "distance": 0.3,
+                }
+            ]
+        )
+        ledger, compiler = await _setup(tmp_path, vector_store=store)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+
+        context = await compiler.compile_context(
+            thread_id, "check this", rpm_pressure_high=False
+        )
+
+        assert EPISTEMIC_WARNING in context.prompt
+
+    asyncio.run(scenario())
+
+
+def test_long_term_recall_is_trimmed_before_short_term_entries(tmp_path):
+    async def scenario():
+        store = FakeVectorStore(
+            [
+                {
+                    "id": "d-4",
+                    "document": "long recall " * 200,
+                    "metadata": {
+                        "source": "atelier",
+                        "epistemic_tag": "VERIFIED_FACT",
+                        "credibility_score": 95,
+                    },
+                    "distance": 0.1,
+                }
+            ]
+        )
+        ledger, compiler = await _setup(
+            tmp_path, max_context_tokens=200, vector_store=store
+        )
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="SHORT TERM FACT",
+        )
+
+        context = await compiler.compile_context(
+            thread_id, "summarize", rpm_pressure_high=False
+        )
+
+        assert context.long_term == []
+        assert "long recall" not in context.prompt
+        assert "SHORT TERM FACT" in context.prompt
+
+    asyncio.run(scenario())
+
+
+def test_vectorized_entries_leave_the_short_term_window(tmp_path):
+    async def scenario():
+        ledger, compiler = await _setup(tmp_path, vector_store=FakeVectorStore())
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="short term fact",
+        )
+        archived_entry = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="already embedded fact",
+        )
+        await ledger.mark_vectorized("ledger_entries", [archived_entry])
+
+        context = await compiler.compile_context(
+            thread_id, "status?", rpm_pressure_high=False
+        )
+
+        assert [row["content"] for row in context.entries] == ["short term fact"]
+        assert "already embedded fact" not in context.prompt
 
     asyncio.run(scenario())

@@ -452,3 +452,183 @@ def test_system_state_roundtrip_survives_new_connection(tmp_path):
         assert await ledger.get_system_state("kill_switch") == "0"
 
     asyncio.run(scenario())
+
+def test_is_vectorized_defaults_false_and_mark_vectorized_updates_once(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        entry_id = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="Remember me later.",
+        )
+        discovery_id = await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Something useful.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Improves scripts.",
+        )
+
+        assert not (await ledger.read("ledger_entries", entry_id))["is_vectorized"]
+        assert not (await ledger.read("atelier_discoveries", discovery_id))[
+            "is_vectorized"
+        ]
+        assert await ledger.count_vectorized() == 0
+
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 1
+        assert await ledger.mark_vectorized("atelier_discoveries", [discovery_id]) == 1
+        assert await ledger.count_vectorized() == 2
+
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 0
+        with pytest.raises(ValueError):
+            await ledger.mark_vectorized("ledger_threads", [thread_id])
+
+    asyncio.run(scenario())
+
+
+def test_initialize_adds_is_vectorized_to_a_legacy_sqlite_file(tmp_path):
+    import sqlite3
+
+    async def scenario():
+        path = tmp_path / "ledger.db"
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            """
+            CREATE TABLE ledger_entries (
+                entry_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                content TEXT NOT NULL,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                is_backup BOOLEAN NOT NULL DEFAULT 0
+            );
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Legacy thread", "HUMAN")
+        entry_id = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="Added after migration.",
+        )
+
+        assert not (await ledger.read("ledger_entries", entry_id))["is_vectorized"]
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_list_pending_vector_entries_filters_by_age_and_thread_status(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        completed = await ledger.create(
+            "ledger_threads",
+            title="Completed",
+            status="Completed",
+            origin="HUMAN",
+            priority_score=100,
+        )
+        archived = await ledger.create(
+            "ledger_threads",
+            title="Archived",
+            status="Archived",
+            origin="HUMAN",
+            priority_score=100,
+        )
+        active = await ledger.create_thread("Active", "HUMAN")
+        cutoff = "2026-10-15 00:00:00"
+
+        pending = [
+            await ledger.create(
+                "ledger_entries",
+                thread_id=thread_id,
+                tag="FAKTA",
+                content=f"old-{thread_id[:4]}",
+                created_at="2026-09-01 00:00:00",
+            )
+            for thread_id in (completed, archived)
+        ]
+        await ledger.create(
+            "ledger_entries",
+            thread_id=active,
+            tag="FAKTA",
+            content="old but active",
+            created_at="2026-09-01 00:00:00",
+        )
+        await ledger.create(
+            "ledger_entries",
+            thread_id=completed,
+            tag="FAKTA",
+            content="recent",
+            created_at="2026-11-10 00:00:00",
+        )
+
+        rows = await ledger.list_pending_vector_entries(cutoff)
+
+        assert [row["entry_id"] for row in rows] == sorted(pending)
+
+    asyncio.run(scenario())
+
+
+def test_list_pending_vector_discoveries_filters_by_age(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        old = await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Old discovery.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Useful.",
+            extracted_at="2026-10-01 00:00:00",
+        )
+        await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Fresh discovery.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Useful.",
+            extracted_at="2026-11-13 00:00:00",
+        )
+
+        rows = await ledger.list_pending_vector_discoveries(
+            "2026-11-10 00:00:00"
+        )
+
+        assert [row["discovery_id"] for row in rows] == [old]
+
+    asyncio.run(scenario())
+
+
+def test_list_ledger_entries_can_exclude_vectorized_rows(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        keep = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="short-term",
+        )
+        stored = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="long-term",
+        )
+        await ledger.mark_vectorized("ledger_entries", [stored])
+
+        rows = await ledger.list_ledger_entries(
+            thread_id, only_unvectorized=True
+        )
+
+        assert [row["entry_id"] for row in rows] == [keep]
+
+    asyncio.run(scenario())

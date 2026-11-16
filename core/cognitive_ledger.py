@@ -7,13 +7,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, event, select, text, update
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from core.db.dialects import create_search_objects, ensure_sqlite_is_backup_columns
+from core.db.dialects import create_search_objects, ensure_sqlite_columns
 from core.db.schema import metadata
 from core.db.timestamps import utc_now_text
 
@@ -65,7 +65,15 @@ _TABLES = {
     ),
     "ledger_entries": (
         "entry_id",
-        {"thread_id", "tag", "content", "token_count", "is_archived", "created_at"},
+        {
+            "thread_id",
+            "tag",
+            "content",
+            "token_count",
+            "is_archived",
+            "created_at",
+            "is_vectorized",
+        },
     ),
     "atelier_discoveries": (
         "discovery_id",
@@ -75,6 +83,7 @@ _TABLES = {
             "source_url",
             "relevance_to_user",
             "extracted_at",
+            "is_vectorized",
         },
     ),
     "activity_logs": (
@@ -179,7 +188,7 @@ class CognitiveLedger:
                 await connection.commit()
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
-            await ensure_sqlite_is_backup_columns(connection)
+            await ensure_sqlite_columns(connection)
             await create_search_objects(connection)
 
     async def dispose(self) -> None:
@@ -388,6 +397,7 @@ class CognitiveLedger:
         thread_id: str,
         limit: int = 20,
         tags: tuple[str, ...] | None = None,
+        only_unvectorized: bool = False,
     ) -> list[dict]:
         """Last `limit` entries for a thread, returned in chronological order."""
         if tags:
@@ -396,6 +406,8 @@ class CognitiveLedger:
                 raise ValueError(f"unknown entry tags: {sorted(unknown)}")
         table = self._table("ledger_entries")
         statement = select(table).where(table.c.thread_id == thread_id)
+        if only_unvectorized:
+            statement = statement.where(table.c.is_vectorized.is_(False))
         if tags:
             statement = statement.where(table.c.tag.in_(tags))
         statement = (
@@ -437,6 +449,75 @@ class CognitiveLedger:
                 .order_by(table.c.created_at.asc(), table.c.entry_id.asc())
             )
             return [dict(row) for row in rows.mappings().all()]
+
+    async def list_pending_vector_entries(
+        self, older_than: str, limit: int = 500
+    ) -> list[dict]:
+        """Old entries whose parent thread is finished and that lack a vector."""
+        entries = self._table("ledger_entries")
+        threads = self._table("ledger_threads")
+        statement = (
+            select(entries)
+            .join(threads, entries.c.thread_id == threads.c.thread_id)
+            .where(
+                entries.c.is_vectorized.is_(False),
+                entries.c.created_at < older_than,
+                threads.c.status.in_(("Completed", "Archived")),
+            )
+            .order_by(entries.c.created_at.asc(), entries.c.entry_id.asc())
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_pending_vector_discoveries(
+        self, older_than: str, limit: int = 500
+    ) -> list[dict]:
+        table = self._table("atelier_discoveries")
+        statement = (
+            select(table)
+            .where(
+                table.c.is_vectorized.is_(False),
+                table.c.extracted_at < older_than,
+            )
+            .order_by(table.c.extracted_at.asc(), table.c.discovery_id.asc())
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def mark_vectorized(self, table: str, ids: list[str]) -> int:
+        if table not in {"ledger_entries", "atelier_discoveries"}:
+            raise ValueError(f"table is not vectorized: {table}")
+        if not ids:
+            return 0
+        target = self._table(table)
+        primary_key = next(iter(target.primary_key.columns)).name
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(target)
+                .where(
+                    target.c[primary_key].in_(ids),
+                    target.c.is_vectorized.is_(False),
+                )
+                .values(is_vectorized=True)
+            )
+            return result.rowcount
+
+    async def count_vectorized(self) -> int:
+        total = 0
+        async with self._engine.connect() as connection:
+            for name in ("ledger_entries", "atelier_discoveries"):
+                table = self._table(name)
+                row = await connection.execute(
+                    select(func.count())
+                    .select_from(table)
+                    .where(table.c.is_vectorized.is_(True))
+                )
+                total += int(row.scalar() or 0)
+        return total
 
     async def list_threads(self, status: str | None = None) -> list[dict]:
         table = self._table("ledger_threads")

@@ -29,6 +29,7 @@ from core.plugin_loader import PluginLoader
 from core.provider_pool import AllProvidersUnavailable
 from core.schemas import MissionReply, PluginOutputSchema
 from core.supervisor import Supervisor
+from core.vector_store import VectorStore
 
 Worker = Callable[[str], Awaitable[str | MissionReply]]
 Initiative = Callable[[], Awaitable[Any]]
@@ -36,6 +37,9 @@ Initiative = Callable[[], Awaitable[Any]]
 logger = logging.getLogger(__name__)
 
 _UNTIL_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+SLEEP_MODE_LAST_RUN_KEY = "sleep_mode_last_run"
+# Local hours when Sleep Mode may run its batch job (00:00-05:59).
+SLEEP_HOURS = frozenset(range(0, 6))
 
 
 def _parse_until(value: str | None) -> datetime | None:
@@ -98,10 +102,12 @@ class Runtime:
         deliver_file: Optional[Callable[[str], Awaitable[None]]] = None,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         supervisor_timeout_seconds: float = 300,
+        vector_store: VectorStore | None = None,
     ) -> None:
         self._ledger = ledger
         self._governor = governor
-        self._compiler = compiler or ContextCompiler(ledger)
+        store = vector_store or VectorStore()
+        self._compiler = compiler or ContextCompiler(ledger, vector_store=store)
         self._supervisor = supervisor or Supervisor(
             HealerNode(), timeout_seconds=supervisor_timeout_seconds
         )
@@ -112,7 +118,7 @@ class Runtime:
         self._initiative_cost = initiative_cost_usd
         self._input_rate = input_usd_per_million
         self._output_rate = output_usd_per_million
-        self._memory = memory or MemoryManager(ledger)
+        self._memory = memory or MemoryManager(ledger, vector_store=store)
         self._monologue = monologue or InnerMonologue(governor)
         self._monologue_every_cycles = max(1, monologue_every_cycles)
         self._tick_count = 0
@@ -403,7 +409,25 @@ class Runtime:
             )
         return await asyncio.to_thread(plugin.execute, payload)
 
-    async def scheduled_tick(self) -> Any:
+    async def sleep_mode_tick(self, now: datetime | None = None) -> Any:
+        """Nightly batch vectorization: zero LLM tokens, once per local date."""
+        now = now or datetime.now()
+        if now.hour not in SLEEP_HOURS:
+            return None
+        today = now.strftime("%Y-%m-%d")
+        if await self._ledger.get_system_state(SLEEP_MODE_LAST_RUN_KEY) == today:
+            return None
+        try:
+            return await self._memory.vectorize_pending()
+        except Exception:
+            # One attempt per night: a missing model or a dead Chroma must not
+            # hammer the disk all night; rows stay is_vectorized=False for retry.
+            logger.exception("sleep-mode vectorization failed; retrying next night")
+            return None
+        finally:
+            await self._ledger.set_system_state(SLEEP_MODE_LAST_RUN_KEY, today)
+
+    async def scheduled_tick(self, now: datetime | None = None) -> Any:
         await self.auto_resume()
         if await self.blocked():
             return None
@@ -413,6 +437,7 @@ class Runtime:
             return None
         if self._wake_up is not None:
             self._wake_up()
+        await self.sleep_mode_tick(now)
         self._tick_count += 1
         if self._tick_count % self._monologue_every_cycles:
             return None

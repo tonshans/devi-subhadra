@@ -15,6 +15,7 @@ dependencies = [
     "tiktoken>=0.7",
     "uvicorn>=0.30",
     "playwright>=1.40",
+    "chromadb>=1.5.9",
 ]
 
 [dependency-groups]

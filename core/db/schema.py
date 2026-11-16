@@ -94,6 +94,9 @@ ledger_entries = Table(
     Column("is_archived", Integer, nullable=False, default=0),
     Column("created_at", String(32), nullable=False, default=utc_now_text),
     Column("is_backup", Boolean, nullable=False, default=False, server_default=false()),
+    Column(
+        "is_vectorized", Boolean, nullable=False, default=False, server_default=false()
+    ),
     CheckConstraint(
         "tag IN ('FAKTA', 'TINDAKAN', 'PEMIKIRAN')", name="ck_ledger_entries_tag"
     ),
@@ -109,6 +112,9 @@ atelier_discoveries = Table(
     Column("relevance_to_user", Text, nullable=False),
     Column("extracted_at", String(32), nullable=False, default=utc_now_text),
     Column("is_backup", Boolean, nullable=False, default=False, server_default=false()),
+    Column(
+        "is_vectorized", Boolean, nullable=False, default=False, server_default=false()
+    ),
 )
 
 activity_logs = Table(

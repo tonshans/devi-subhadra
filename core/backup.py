@@ -17,7 +17,7 @@ from sqlalchemy import and_, create_engine, delete, insert, inspect, select, tex
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from core.db.dialects import create_search_objects_sync
+from core.db.dialects import create_search_objects_sync, ensure_sqlite_columns_sync
 from core.db.schema import TABLE_ORDER, metadata, system_state
 from core.db.timestamps import utc_now_text
 
@@ -43,6 +43,7 @@ def _prepare_snapshot(connection) -> None:
     if connection.dialect.name == "sqlite":
         connection.execute(text("PRAGMA foreign_keys=ON;"))
     metadata.create_all(connection)
+    ensure_sqlite_columns_sync(connection)
     create_search_objects_sync(connection)
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -560,3 +561,70 @@ def test_manual_pause_is_not_auto_resumed(tmp_path):
         assert await ledger.get_system_state("kill_switch") == "1"
 
     asyncio.run(scenario())
+
+
+def test_scheduled_tick_runs_sleep_mode_once_per_night(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        runs = []
+
+        class FakeMemory:
+            async def vectorize_pending(self, now=None):
+                runs.append(now)
+                return "report"
+
+        async def initiative():
+            return "slept"
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            worker=None,
+            memory=FakeMemory(),
+            initiative=initiative,
+        )
+
+        await runtime.scheduled_tick(datetime(2026, 11, 16, 12, 0))
+        assert runs == []
+
+        await runtime.scheduled_tick(datetime(2026, 11, 16, 2, 0))
+        await runtime.scheduled_tick(datetime(2026, 11, 16, 3, 0))
+        assert len(runs) == 1
+
+        await runtime.scheduled_tick(datetime(2026, 11, 17, 1, 0))
+        assert len(runs) == 2
+
+    asyncio.run(scenario())
+
+
+def test_sleep_mode_failure_is_logged_and_not_retried_same_night(tmp_path, caplog):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        class ExplodingMemory:
+            def __init__(self):
+                self.calls = 0
+
+            async def vectorize_pending(self, now=None):
+                self.calls += 1
+                raise RuntimeError("chroma down")
+
+        async def initiative():
+            return "slept"
+
+        memory = ExplodingMemory()
+        runtime = Runtime(
+            ledger,
+            governor,
+            worker=None,
+            memory=memory,
+            initiative=initiative,
+        )
+
+        await runtime.scheduled_tick(datetime(2026, 11, 16, 2, 0))
+        await runtime.scheduled_tick(datetime(2026, 11, 16, 3, 0))
+
+        assert memory.calls == 1
+
+    asyncio.run(scenario())
+    assert "sleep-mode vectorization failed" in caplog.text

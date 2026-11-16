@@ -92,29 +92,57 @@ def create_search_objects_sync(connection) -> None:
         connection.execute(text(statement))
 
 
-async def ensure_sqlite_is_backup_columns(connection: AsyncConnection) -> None:
-    """Add `is_backup` to databases created before incremental backup existed."""
+# Columns added after the first release; old SQLite files are migrated in place.
+_COLUMN_BACKFILL = {
+    "core_directives": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "semantic_memory": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "ledger_threads": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "ledger_entries": {
+        "is_backup": "BOOLEAN NOT NULL DEFAULT 0",
+        "is_vectorized": "BOOLEAN NOT NULL DEFAULT 0",
+    },
+    "atelier_discoveries": {
+        "is_backup": "BOOLEAN NOT NULL DEFAULT 0",
+        "is_vectorized": "BOOLEAN NOT NULL DEFAULT 0",
+    },
+    "activity_logs": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "api_usage_metrics": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "system_state": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "processed_updates": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "budget_usage": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+}
+
+
+def _missing_columns(table_info, columns: dict[str, str]) -> list[str]:
+    names = {row[1] for row in table_info}
+    return [name for name in columns if name not in names]
+
+
+async def ensure_sqlite_columns(connection: AsyncConnection) -> None:
+    """Add `is_backup`/`is_vectorized` to databases created before them."""
     if connection.dialect.name != "sqlite":
         return
-    tables = (
-        "core_directives",
-        "semantic_memory",
-        "ledger_threads",
-        "ledger_entries",
-        "atelier_discoveries",
-        "activity_logs",
-        "api_usage_metrics",
-        "system_state",
-        "processed_updates",
-        "budget_usage",
-    )
-    for table in tables:
-        columns = await connection.execute(text(f"PRAGMA table_info({table})"))
-        names = {row[1] for row in columns.fetchall()}
-        if "is_backup" not in names:
+    for table, columns in _COLUMN_BACKFILL.items():
+        info = await connection.execute(text(f"PRAGMA table_info({table})"))
+        for name in _missing_columns(info.fetchall(), columns):
             await connection.execute(
                 text(
-                    f"ALTER TABLE {table} ADD COLUMN is_backup "
-                    "BOOLEAN NOT NULL DEFAULT 0"
+                    f"ALTER TABLE {table} ADD COLUMN {name} "
+                    f"{columns[name]}"
                 )
             )
+
+
+def ensure_sqlite_columns_sync(connection) -> None:
+    if connection.dialect.name != "sqlite":
+        return
+    for table, columns in _COLUMN_BACKFILL.items():
+        info = connection.execute(text(f"PRAGMA table_info({table})"))
+        for name in _missing_columns(info.fetchall(), columns):
+            connection.execute(
+                text(
+                    f"ALTER TABLE {table} ADD COLUMN {name} "
+                    f"{columns[name]}"
+                )
+            )
+
