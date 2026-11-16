@@ -15,7 +15,8 @@ GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 STRUCTURED_INSTRUCTION = (
     'Reply ONLY as JSON: {"reply": "<text for the user>", '
     '"files": ["<local file path inside workspace or atelier>"], '
-    '"plugin": "<tool name or null>", "plugin_payload": {}}. '
+    '"plugin": "<tool name or null>", "plugin_payload": {}, '
+    '"reasoning": "<one or two sentences on why you chose this>"}. '
     "Use an empty files list when no file should be sent. "
     "Set plugin only when a listed tool is needed; the tool runs and you are "
     "asked again for the final reply."
@@ -47,6 +48,10 @@ class OpenRouterWorker:
         self._structured = structured
         # Set per call from the response `usage` block; None when absent.
         self.last_usage: Optional[dict] = None
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     async def _post(self, payload: dict) -> httpx.Response:
         headers = {"Authorization": f"Bearer {self._api_key}"}
@@ -119,6 +124,10 @@ class GeminiWorker:
         self._timeout = timeout
         self._structured = structured
         self.last_usage: Optional[dict] = None
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def _url(self) -> str:
         return f"{self._endpoint}/{self._model}:generateContent"

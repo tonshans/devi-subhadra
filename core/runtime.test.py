@@ -790,6 +790,13 @@ def test_resume_next_active_reruns_a_crashed_mission(tmp_path):
             content="kerjakan ini",
             token_count=2,
         )
+        # A crash leaves the attempt recorded but the thread still Active.
+        await ledger.record_thread_attempt(thread_id)
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
         prompts = []
 
         async def worker(prompt):
@@ -812,7 +819,13 @@ def test_resume_next_active_reruns_a_crashed_mission(tmp_path):
 def test_resume_next_active_respects_the_retry_cooldown(tmp_path):
     async def scenario():
         ledger, governor = await _setup(tmp_path)
-        await ledger.create_thread("Just tried", "HUMAN")
+        thread_id = await ledger.create_thread("Just tried", "HUMAN")
+        # Ready to resume once, then blocked by the retry cooldown.
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
         calls = []
 
         async def worker(prompt):
@@ -1072,5 +1085,132 @@ def test_failed_plugin_result_is_still_shown_to_the_model(tmp_path):
         assert reply == "tool tidak ada, lanjut manual"
         assert "TOOL RESULT (missing)" in prompts[1]
         assert "Unknown plugin" in prompts[1]
+
+    asyncio.run(scenario())
+
+
+def test_resume_next_active_skips_a_thread_that_is_still_running(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        await ledger.create_thread("In flight", "HUMAN")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        # Webhook/Telegram create the thread, then work it in the same call.
+        assert await runtime.resume_next_active() is None
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
+def test_mission_writes_one_audit_row_per_step(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        plugin = _EchoPlugin()
+        prompts = []
+
+        async def worker(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return MissionReply(
+                    reply="mencari",
+                    plugin="echo",
+                    plugin_payload={"text": "halo"},
+                    reasoning="butuh data dari tool",
+                )
+            return MissionReply(reply="selesai", reasoning="tool sudah menjawab")
+
+        runtime = Runtime(
+            ledger, governor, plugins={"echo": plugin}, worker=worker
+        )
+
+        await runtime.handle_mission(thread_id, "pakai tool")
+
+        rows = await ledger.list_audit_logs(thread_id)
+        assert [row["step"] for row in rows] == [1, 2, 3]
+        assert {row["trace_id"] for row in rows} == {rows[0]["trace_id"]}
+        assert rows[0]["action"] == "CALL_PLUGIN"
+        assert rows[0]["cot"] == "butuh data dari tool"
+        assert "pakai tool" in rows[0]["prompt"]
+        assert rows[1]["action"] == "CALL_PLUGIN"
+        assert rows[1]["action_target"] == "echo"
+        assert '"text": "halo"' in rows[1]["action_payload"]
+        assert rows[2]["action"] == "LLM_REPLY"
+        assert rows[2]["response"] == "selesai"
+        assert all(row["trigger"] == "TELEGRAM" for row in rows)
+        assert all(row["origin"] == "HUMAN" for row in rows)
+
+        entries = await ledger.list_ledger_entries(thread_id, tags=("FAKTA",))
+        assert rows[-1]["result_table"] == "ledger_entries"
+        assert rows[-1]["result_id"] == entries[-1]["entry_id"]
+
+    asyncio.run(scenario())
+
+
+def test_audit_can_be_disabled(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+
+        async def worker(prompt):
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker, audit_enabled=False)
+
+        await runtime.handle_mission(thread_id, "halo")
+
+        assert await ledger.list_audit_logs(thread_id) == []
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_cycle_leaves_an_audit_row(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        async def worker(prompt, structured_model=None):
+            return _decision()
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime._default_initiative()
+
+        thread = await ledger.get_next_active_thread(origin="AGENT")
+        rows = await ledger.list_audit_logs(thread["thread_id"])
+        assert len(rows) == 1
+        assert rows[0]["trigger"] == "CURIOSITY"
+        assert rows[0]["action"] == "CREATE_INITIATIVE"
+        assert rows[0]["cot"] == "vision says keep learning"
+        assert rows[0]["result_table"] == "ledger_entries"
+        assert rows[0]["result_id"] is not None
+
+    asyncio.run(scenario())
+
+
+def test_resume_mission_is_audited_as_scheduler_trigger(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
+
+        async def worker(prompt):
+            return "lanjut"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime.resume_next_active()
+
+        rows = await ledger.list_audit_logs(thread_id)
+        assert rows[0]["trigger"] == "SCHEDULER_RESUME"
 
     asyncio.run(scenario())

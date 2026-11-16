@@ -273,3 +273,12 @@ def test_curiosity_daily_limit_rejects_negative(tmp_path):
 
     with pytest.raises(ConfigValidationError):
         load_config(_write_config(tmp_path, data))
+
+
+def test_audit_enabled_defaults_to_true_and_accepts_false(tmp_path):
+    assert load_config(_write_config(tmp_path, _valid_config())).audit_enabled is True
+
+    data = _valid_config()
+    data["audit_enabled"] = False
+
+    assert load_config(_write_config(tmp_path, data)).audit_enabled is False

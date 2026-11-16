@@ -110,6 +110,33 @@ _TABLES = {
             "created_at",
         },
     ),
+    "audit_logs": (
+        "audit_id",
+        {
+            "trace_id",
+            "step",
+            "thread_id",
+            "trigger",
+            "trigger_ref",
+            "origin",
+            "model",
+            "prompt",
+            "prompt_tokens",
+            "cot",
+            "action",
+            "action_target",
+            "action_payload",
+            "response",
+            "response_tokens",
+            "outcome",
+            "error",
+            "result_table",
+            "result_id",
+            "latency_ms",
+            "cost_usd",
+            "created_at",
+        },
+    ),
     "api_usage_metrics": (
         "metric_id",
         {
@@ -324,11 +351,11 @@ class CognitiveLedger:
         if origin is not None:
             statement = statement.where(table.c.origin == origin)
         if ready_before is not None:
+            # Only threads with a finished attempt are crash candidates; a
+            # thread without one is either in flight or never started.
             statement = statement.where(
-                or_(
-                    table.c.last_attempt_at.is_(None),
-                    table.c.last_attempt_at <= ready_before,
-                )
+                table.c.last_attempt_at.is_not(None),
+                table.c.last_attempt_at <= ready_before,
             )
         statement = statement.order_by(
             table.c.priority_score.desc(),
@@ -688,6 +715,18 @@ class CognitiveLedger:
             rows = await connection.execute(
                 select(table)
                 .order_by(table.c.created_at.desc(), table.c.log_id.desc())
+                .limit(limit)
+            )
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_audit_logs(self, key: str, limit: int = 200) -> list[dict]:
+        """Audit rows for one trace id or thread id, oldest first."""
+        table = self._table("audit_logs")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table)
+                .where(or_(table.c.trace_id == key, table.c.thread_id == key))
+                .order_by(table.c.created_at.asc(), table.c.step.asc())
                 .limit(limit)
             )
             return [dict(row) for row in rows.mappings().all()]

@@ -255,6 +255,10 @@ class ProviderPool:
         return lines
 
     @property
+    def model(self) -> str | None:
+        return getattr(self._workers[self._keys[0].id], "model", None)
+
+    @property
     def ready_count(self) -> int:
         now = self._governor.now()
         return sum(

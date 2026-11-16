@@ -152,6 +152,7 @@ def build_runtime(
         wake_up=gateway.wake_up_ping,
         monologue_every_cycles=settings.monologue_every_cycles,
         curiosity_daily_limit=settings.curiosity_daily_limit,
+        audit_enabled=settings.audit_enabled,
         input_usd_per_million=settings.pricing.input_usd_per_million,
         output_usd_per_million=settings.pricing.output_usd_per_million,
         deliver_file=deliver_file,

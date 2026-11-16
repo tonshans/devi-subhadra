@@ -10,6 +10,8 @@ fallback_sqlite_path: "./data/devi_subhadra.db"
 monologue_every_cycles: 5
 # LLM curiosity cycles per day. 0 turns proactive thinking off.
 curiosity_daily_limit: 3
+# One audit_logs row per agent step (prompt, CoT, response, cost).
+audit_enabled: true
 
 budget:
   max_initiative_budget_usd: 2.50

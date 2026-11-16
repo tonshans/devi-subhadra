@@ -246,6 +246,37 @@ async def pause_agent(ctx: CommandContext, _args: str) -> str:
     return f"Agent paused ({paused} active thread(s) paused)."
 
 
+@command("/trace", "Audit trail for a thread or trace id (no LLM calls).")
+async def trace(ctx: CommandContext, args: str) -> str:
+    key = args.strip()
+    if not key:
+        return "usage: /trace <thread_id|trace_id>"
+    rows = await ctx.ledger.list_audit_logs(key)
+    if not rows:
+        return f"no audit rows for {key} (audit disabled or unknown id)"
+    lines = [f"audit trail: {key} ({len(rows)} step(s))"]
+    for row in rows:
+        latency = row["latency_ms"] or 0
+        cost = row["cost_usd"] or 0.0
+        head = (
+            f"{row['created_at']} step {row['step']} "
+            f"{row['trigger']}/{row['action']} {row['outcome']} "
+            f"{latency}ms ${cost:.4f}"
+        )
+        if row["action_target"]:
+            head += f" target={row['action_target']}"
+        lines.append(head)
+        if row["cot"]:
+            lines.append(f"  why: {row['cot']}")
+        if row["response"]:
+            lines.append(f"  out: {row['response'][:200]}")
+        if row["error"]:
+            lines.append(f"  err: {row['error']}")
+        if row["result_table"]:
+            lines.append(f"  where: {row['result_table']}/{row['result_id']}")
+    return "\n".join(lines)
+
+
 @command("/resume-agent", "Resume agent activity and LLM calls.")
 async def resume_agent(ctx: CommandContext, _args: str) -> str:
     # Flag first: new missions are allowed once the queue is reopened.

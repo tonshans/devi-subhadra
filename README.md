@@ -100,6 +100,7 @@ Command yang sama tersedia lewat bot Telegram dan REPL lokal `python -m scripts.
 | `/agent-freetime status` | Menampilkan status freetime (`on`/`off`). Tanpa argumen sama dengan `status`. |
 | `/pause-agent` | Pause manual: kill switch aktif, semua thread `Active` dipause, misi baru ditolak sampai `/resume-agent`. Pause manual tidak auto-resume. |
 | `/resume-agent` | Membatalkan pause manual maupun pause rate-limit, membuka kembali thread yang dipause. |
+| `/trace <thread_id\|trace_id>` | Menampilkan audit trail per langkah: waktu, trigger, aksi, outcome, latency, biaya, CoT (`why`), kutipan respons, dan lokasi hasil disimpan (`where`). Tidak memanggil LLM. |
 | `/quit`, `/exit` | Keluar dari REPL lokal (Ctrl-D juga bisa). Hanya tersedia di REPL, bukan Telegram. |
 
 ### Limit Provider & Budget Ratio

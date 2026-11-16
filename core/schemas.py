@@ -63,3 +63,5 @@ class MissionReply(StrictBaseModel):
     # Tool request: the runtime runs the plugin, then asks the model again.
     plugin: Optional[str] = None
     plugin_payload: Optional[Dict[str, Any]] = None
+    # Why the model chose this action; stored as CoT in audit_logs.
+    reasoning: str = ""

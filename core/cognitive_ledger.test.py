@@ -773,3 +773,29 @@ def test_initialize_closes_legacy_active_threads_once(tmp_path):
         )["status"] == "Active"
 
     asyncio.run(scenario())
+
+
+def test_list_audit_logs_filters_by_trace_or_thread_in_step_order(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        for trace, step in (("trace-1", 1), ("trace-1", 2), ("trace-2", 1)):
+            await ledger.create(
+                "audit_logs",
+                trace_id=trace,
+                step=step,
+                thread_id=thread_id,
+                trigger="TELEGRAM",
+                origin="HUMAN",
+                action="LLM_REPLY",
+                outcome="SUCCESS",
+            )
+
+        trace_rows = await ledger.list_audit_logs("trace-1")
+        assert [row["step"] for row in trace_rows] == [1, 2]
+
+        thread_rows = await ledger.list_audit_logs(thread_id)
+        assert len(thread_rows) == 3
+        assert await ledger.list_audit_logs("unknown") == []
+
+    asyncio.run(scenario())

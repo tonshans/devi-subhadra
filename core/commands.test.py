@@ -172,3 +172,34 @@ def test_load_governor_overrides_restores_saved_settings(tmp_path):
         assert governor.agent_freetime is True
 
     asyncio.run(scenario())
+
+
+def test_trace_command_prints_the_audit_trail(tmp_path):
+    async def scenario():
+        ledger, _, ctx = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        await ledger.create(
+            "audit_logs",
+            trace_id="trace-1",
+            step=1,
+            thread_id=thread_id,
+            trigger="TELEGRAM",
+            origin="HUMAN",
+            action="LLM_REPLY",
+            cot="user asked a question",
+            response="jawaban",
+            outcome="SUCCESS",
+            result_table="ledger_entries",
+            result_id="entry-1",
+        )
+
+        text = await dispatch(f"/trace {thread_id}", ctx)
+
+        assert "audit trail:" in text
+        assert "step 1 TELEGRAM/LLM_REPLY SUCCESS" in text
+        assert "why: user asked a question" in text
+        assert "where: ledger_entries/entry-1" in text
+        assert "no audit rows" in await dispatch("/trace nope", ctx)
+        assert "usage: /trace" in await dispatch("/trace", ctx)
+
+    asyncio.run(scenario())

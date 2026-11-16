@@ -94,6 +94,8 @@ class AppConfig(StrictConfig):
     monologue_every_cycles: int = Field(default=1, ge=1)
     # LLM-driven curiosity cycles per day; 0 disables proactive thinking.
     curiosity_daily_limit: int = Field(default=3, ge=0)
+    # Write one audit_logs row per agent step (prompt, CoT, response).
+    audit_enabled: bool = True
     budget: BudgetConfig
     rate_limits: RateLimitsConfig
     models: ModelsConfig

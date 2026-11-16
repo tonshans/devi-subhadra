@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -105,6 +108,7 @@ class Runtime:
         wake_up: Optional[Callable[[], bool]] = None,
         initiative: Optional[Initiative] = None,
         curiosity_daily_limit: int = 3,
+        audit_enabled: bool = True,
         deliver_file: Optional[Callable[[str], Awaitable[None]]] = None,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         supervisor_timeout_seconds: float = 300,
@@ -146,6 +150,7 @@ class Runtime:
         self._wake_up = wake_up
         self._initiative = initiative or self._default_initiative
         self._curiosity_limit = curiosity_daily_limit
+        self._audit_enabled = audit_enabled
         self._deliver_file = deliver_file
         self._notify = notify
 
@@ -189,12 +194,14 @@ class Runtime:
         try:
             # shortcut: needs a worker that accepts structured_model; a plain
             # callable just logs and skips curiosity.
+            prompt = await self._curiosity_prompt()
             decision = await self._worker(
-                await self._curiosity_prompt(), structured_model=SupervisorDecision
+                prompt, structured_model=SupervisorDecision
             )
         except Exception:
             logger.exception("curiosity cycle failed")
             return
+        usage = getattr(self._worker, "last_usage", None)
         if not isinstance(decision, SupervisorDecision):
             return
 
@@ -206,22 +213,54 @@ class Runtime:
             status="Active" if thinking else "Completed",
         )
         if thinking:
-            # Give the resume loop a concrete goal to work on.
+            # Give the resume loop a concrete goal plus a ready-now timestamp:
+            # only threads with a completed attempt are resume candidates.
             await self._ledger.update(
                 "ledger_threads",
                 thread_id,
                 expected_output=decision.thought_entry,
+                last_attempt_at="2000-01-01 00:00:00.000000",
             )
-        await self._ledger.create(
+        entry_id = await self._ledger.create(
             "ledger_entries",
             thread_id=thread_id,
             tag="PEMIKIRAN",
             content=f"{decision.reasoning}\n{decision.thought_entry}",
             token_count=self._compiler.estimate_tokens(decision.thought_entry),
         )
+        await self._audit(
+            trace_id=str(uuid.uuid4()),
+            step=1,
+            thread_id=thread_id,
+            trigger="CURIOSITY",
+            origin="AGENT",
+            model=self._model_name(),
+            prompt=prompt,
+            prompt_tokens=int((usage or {}).get("prompt_tokens", 0)),
+            cot=decision.reasoning,
+            action=decision.action_type,
+            response=decision.thought_entry,
+            response_tokens=int((usage or {}).get("completion_tokens", 0)),
+            outcome="SUCCESS",
+            result_table="ledger_entries",
+            result_id=entry_id,
+        )
 
     async def blocked(self) -> bool:
         return await self._ledger.get_system_state(KILL_SWITCH_KEY) == "1"
+
+    def _model_name(self) -> str | None:
+        return getattr(self._worker, "model", None)
+
+    async def _audit(self, **fields: Any) -> str | None:
+        """One audit_logs row per agent step; never breaks the mission."""
+        if not self._audit_enabled:
+            return None
+        try:
+            return await self._ledger.create("audit_logs", **fields)
+        except Exception:
+            logger.exception("audit write failed")
+            return None
 
     async def _notice(self, message: str) -> None:
         if self._notify is None:
@@ -365,6 +404,7 @@ class Runtime:
         query: str,
         initiator: str = "Telegram",
         record_request: bool = True,
+        trigger: str | None = None,
     ) -> str:
         await self.auto_resume()
         if await self.blocked():
@@ -377,8 +417,25 @@ class Runtime:
             raise ValueError(f"unknown thread: {thread_id}")
 
         side = thread["origin"]
+        trigger = (trigger or initiator).upper()
+        trace_id = str(uuid.uuid4())
+        step = 0
+        last_audit_id: str | None = None
         gate = await self._limit_gate(side)
         if gate is not None:
+            # A refused mission still leaves one audit row behind.
+            await self._audit(
+                trace_id=trace_id,
+                step=1,
+                thread_id=thread_id,
+                trigger=trigger,
+                origin=side,
+                prompt=query,
+                prompt_tokens=self._compiler.estimate_tokens(query),
+                action="BLOCKED",
+                response=gate,
+                outcome="BLOCKED",
+            )
             return gate
 
         await self._ledger.record_thread_attempt(thread_id)
@@ -428,6 +485,8 @@ class Runtime:
 
         while True:
             round_start = len(usages)
+            started = time.perf_counter()
+            round_error: str | None = None
 
             async def run_worker() -> PluginOutputSchema:
                 nonlocal unavailable
@@ -478,6 +537,8 @@ class Runtime:
                     if isinstance(result, PluginOutputSchema)
                     else result
                 )
+                if isinstance(result, PluginOutputSchema):
+                    round_error = result.error_message
                 if isinstance(raw_reply, MissionReply):
                     reply = raw_reply.reply
                     files = raw_reply.files
@@ -493,18 +554,53 @@ class Runtime:
                 reply = "Worker failed."
                 files = []
 
-            cost += self._settle_round(
+            round_usages = usages[round_start:]
+            round_cost = self._settle_round(
                 bucket,
                 reserved,
-                usages[round_start:],
+                round_usages,
                 unavailable=unavailable,
                 paid=paid,
                 priced=priced,
             )
+            cost += round_cost
 
             plugin = (
                 raw_reply.plugin if isinstance(raw_reply, MissionReply) else None
             )
+            reasoning = (
+                raw_reply.reasoning if isinstance(raw_reply, MissionReply) else ""
+            )
+            step += 1
+            last_audit_id = await self._audit(
+                trace_id=trace_id,
+                step=step,
+                thread_id=thread_id,
+                trigger=trigger,
+                origin=side,
+                model=self._model_name(),
+                prompt=prompt,
+                prompt_tokens=sum(
+                    int(item.get("prompt_tokens", 0)) for item in round_usages
+                ),
+                cot=reasoning or None,
+                action=(
+                    "HEAL"
+                    if outcome.heal_result is not None
+                    else "CALL_PLUGIN"
+                    if plugin and worker_succeeded
+                    else "LLM_REPLY"
+                ),
+                response=reply,
+                response_tokens=sum(
+                    int(item.get("completion_tokens", 0)) for item in round_usages
+                ),
+                outcome="SUCCESS" if worker_succeeded else "FAILED",
+                error=round_error,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                cost_usd=round_cost,
+            )
+
             if (
                 not worker_succeeded
                 or not plugin
@@ -512,7 +608,24 @@ class Runtime:
             ):
                 break
             tool_rounds += 1
+            tool_started = time.perf_counter()
             output = await self.run_plugin(plugin, raw_reply.plugin_payload or {})
+            step += 1
+            last_audit_id = await self._audit(
+                trace_id=trace_id,
+                step=step,
+                thread_id=thread_id,
+                trigger=trigger,
+                origin=side,
+                model=self._model_name(),
+                action="CALL_PLUGIN",
+                action_target=plugin,
+                action_payload=json.dumps(raw_reply.plugin_payload or {}),
+                response=output.model_dump_json()[:4000],
+                outcome="SUCCESS" if output.success else "FAILED",
+                error=output.error_message,
+                latency_ms=int((time.perf_counter() - tool_started) * 1000),
+            )
             prompt = (
                 f"{context.prompt}\n\n"
                 f"TOOL RESULT ({plugin}): {output.model_dump_json()[:4000]}\n"
@@ -552,13 +665,21 @@ class Runtime:
             tokens_used=context.token_count,
             cost_usd=cost,
         )
-        await self._ledger.create(
+        entry_id = await self._ledger.create(
             "ledger_entries",
             thread_id=thread_id,
             tag="FAKTA" if worker_succeeded else "TINDAKAN",
             content=reply,
             token_count=self._compiler.estimate_tokens(reply),
         )
+        if last_audit_id is not None:
+            # Point the last audit row at the reply artifact.
+            await self._ledger.update(
+                "audit_logs",
+                last_audit_id,
+                result_table="ledger_entries",
+                result_id=entry_id,
+            )
         return reply
 
     def _settle_round(
@@ -677,7 +798,9 @@ class Runtime:
             if entries
             else thread.get("expected_output") or f"Lanjutkan misi: {thread['title']}"
         )
-        return await self.handle_mission(thread_id, query, record_request=False)
+        return await self.handle_mission(
+            thread_id, query, record_request=False, trigger="SCHEDULER_RESUME"
+        )
 
     async def scheduled_tick(self, now: datetime | None = None) -> Any:
         await self.auto_resume()
