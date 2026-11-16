@@ -101,7 +101,15 @@ Command yang sama tersedia lewat bot Telegram dan REPL lokal `python -m scripts.
 | `/pause-agent` | Pause manual: kill switch aktif, semua thread `Active` dipause, misi baru ditolak sampai `/resume-agent`. Pause manual tidak auto-resume. |
 | `/resume-agent` | Membatalkan pause manual maupun pause rate-limit, membuka kembali thread yang dipause. |
 | `/trace <thread_id\|trace_id>` | Menampilkan audit trail per langkah: waktu, trigger, aksi, outcome, latency, biaya, CoT (`why`), kutipan respons, dan lokasi hasil disimpan (`where`). Tidak memanggil LLM. |
+| `/approve [skill]` | Mengaktifkan plugin yang baru dibuat agent lewat `register_new_skill` (menjalankan test-nya lebih dulu). Tanpa argumen: daftar skill yang menunggu persetujuan. |
+| `/reject <skill>` | Membuang kode plugin yang menunggu persetujuan tanpa mengaktifkannya. |
 | `/quit`, `/exit` | Keluar dari REPL lokal (Ctrl-D juga bisa). Hanya tersedia di REPL, bukan Telegram. |
+
+### Skill Baru dari Pekerjaan Berulang
+
+Kalau satu misi butuh lebih dari 3 langkah dan kemungkinan diulang, agent diinstruksikan membungkusnya jadi satu plugin (`register_new_skill`, `action_type='create'`) beserta test-nya, bukan script lepas. Plugin baru **tidak langsung aktif**: kodenya ditahan di `plugins/.pending_skills/` sampai pemilik menjalankan `/approve <nama>`. Setelah disetujui, test dijalankan, plugin didaftarkan ke `plugin_registry` tier `ATELIER`, dan muncul di katalog tool pada misi berikutnya tanpa restart. `upgrade` dan `restore` tetap otonom.
+
+Alasannya: kode plugin berjalan di proses agent dengan akses penuh ke filesystem, DB, dan API key, jadi pembuatan pertama butuh persetujuan manusia.
 
 ### Limit Provider & Budget Ratio
 

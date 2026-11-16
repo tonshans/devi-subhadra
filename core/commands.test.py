@@ -216,3 +216,107 @@ def test_status_reports_halt_disk_and_temperature(tmp_path):
         assert "cpu temp: " in text
 
     asyncio.run(scenario())
+
+
+_STAGED_PLUGIN = '''
+from typing import Any
+
+from core.base_plugin import BaseAgentPlugin
+from core.schemas import PluginOutputSchema, StrictBaseModel
+
+
+class Input(StrictBaseModel):
+    text: str
+
+
+class WeeklyRecap(BaseAgentPlugin):
+    plugin_name = "weekly_recap"
+    description = "Weekly recap."
+    input_schema = Input
+
+    def initialize(self, config: dict[str, Any]) -> bool:
+        return True
+
+    def execute(self, payload: dict[str, Any]) -> PluginOutputSchema:
+        return PluginOutputSchema(success=True, data=payload)
+
+    def shutdown(self) -> None:
+        return None
+'''
+
+_STAGED_TEST = "def test_ok():\n    assert True\n"
+
+
+def _stage(tmp_path) -> Path:
+    plugins = tmp_path / "plugins"
+    pending = plugins / ".pending_skills"
+    pending.mkdir(parents=True)
+    (pending / "weekly_recap.py").write_text(_STAGED_PLUGIN)
+    (pending / "weekly_recap.test.py").write_text(_STAGED_TEST)
+    return plugins
+
+
+def test_approve_activates_a_staged_skill_and_registers_it(tmp_path):
+    async def scenario():
+        ledger, _, ctx = await _setup(tmp_path)
+        ctx.plugins_dir = _stage(tmp_path)
+
+        reply = await dispatch("/approve weekly_recap", ctx)
+
+        assert "is active" in reply
+        assert (ctx.plugins_dir / "weekly_recap.py").is_file()
+        assert not (ctx.plugins_dir / ".pending_skills" / "weekly_recap.py").exists()
+        row = await ledger.read("plugin_registry", "weekly_recap")
+        assert row is not None and row["tier_type"] == "ATELIER"
+
+    asyncio.run(scenario())
+
+
+def test_approve_lists_staged_skills_when_called_without_a_name(tmp_path):
+    async def scenario():
+        _, _, ctx = await _setup(tmp_path)
+        ctx.plugins_dir = _stage(tmp_path)
+
+        assert "weekly_recap" in await dispatch("/approve", ctx)
+
+    asyncio.run(scenario())
+
+
+def test_approve_reports_an_unknown_skill_without_creating_files(tmp_path):
+    async def scenario():
+        _, _, ctx = await _setup(tmp_path)
+        ctx.plugins_dir = tmp_path / "plugins"
+
+        reply = await dispatch("/approve ghost_skill", ctx)
+
+        assert "no staged skill" in reply
+        assert not (tmp_path / "plugins" / "ghost_skill.py").exists()
+
+    asyncio.run(scenario())
+
+
+def test_approve_rejects_path_traversal_and_keeps_staged_files(tmp_path):
+    async def scenario():
+        _, _, ctx = await _setup(tmp_path)
+        ctx.plugins_dir = _stage(tmp_path)
+
+        reply = await dispatch("/approve ../escape", ctx)
+
+        assert "invalid skill name" in reply
+        assert (ctx.plugins_dir / ".pending_skills" / "weekly_recap.py").is_file()
+
+    asyncio.run(scenario())
+
+
+def test_reject_discards_the_staged_skill(tmp_path):
+    async def scenario():
+        _, _, ctx = await _setup(tmp_path)
+        ctx.plugins_dir = _stage(tmp_path)
+
+        reply = await dispatch("/reject weekly_recap", ctx)
+
+        assert "discarded" in reply
+        assert not (ctx.plugins_dir / ".pending_skills" / "weekly_recap.py").exists()
+        assert not (ctx.plugins_dir / "weekly_recap.py").exists()
+
+    asyncio.run(scenario())

@@ -47,6 +47,14 @@ def build_extra_tools_prompt(rows: list[dict], archived_dir: str | Path) -> str:
         "gunakan tool 'register_new_skill' dengan mode 'restore' atau 'upgrade' "
         "untuk memodifikasi alat tersebut!"
     )
+    lines.append(
+        "[SOP PAKETISASI] Pekerjaan berulang yang butuh LEBIH DARI 3 langkah JANGAN "
+        "disimpan sebagai script lepas. Bungkus jadi satu plugin lewat "
+        "tool 'register_new_skill' (action_type='create') beserta test-nya, supaya "
+        "lain kali pekerjaan yang sama cukup satu panggilan tool. Kerangka kode "
+        "yang benar: plugins/_template_plugin.py. Plugin baru menunggu persetujuan "
+        "manusia: minta pemilik menjalankan /approve <nama> atau /reject <nama>."
+    )
     return "\n".join(lines)
 
 

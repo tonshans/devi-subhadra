@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 data/
 *.db
+
+# Skills staged by register_new_skill and awaiting /approve
+plugins/.pending_skills/

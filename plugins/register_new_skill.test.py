@@ -74,6 +74,7 @@ def test_create_writes_files_registers_plugin_and_sql(tmp_path):
         archived_dir=tmp_path / "archived",
         test_runner=lambda path: True,
         ledger=ledger,
+        require_approval=False,
     )
 
     result = plugin.execute(_payload())
@@ -124,6 +125,7 @@ def test_failing_tests_leave_no_partial_files(tmp_path):
         plugins_dir=tmp_path / "plugins",
         archived_dir=tmp_path / "archived",
         test_runner=lambda path: False,
+        require_approval=False,
     )
 
     result = plugin.execute(_payload())
@@ -181,6 +183,7 @@ def test_approval_gate_rejects_and_rolls_back(tmp_path):
         archived_dir=tmp_path / "archived",
         test_runner=lambda path: True,
         approver=lambda name, source: False,
+        require_approval=False,
     )
 
     result = plugin.execute(_payload())
@@ -195,6 +198,7 @@ def test_invalid_plugin_source_is_rolled_back(tmp_path):
         plugins_dir=tmp_path / "plugins",
         archived_dir=tmp_path / "archived",
         test_runner=lambda path: True,
+        require_approval=False,
     )
 
     result = plugin.execute(_payload(code="class NotAPlugin:\n    pass\n"))
@@ -289,3 +293,48 @@ def test_restore_rejects_path_traversal_in_plugin_name(tmp_path):
 
     with pytest.raises(ValidationError):
         plugin.execute({"action_type": "restore", "plugin_name": "../escape"})
+
+
+def test_create_is_staged_until_a_human_approves(tmp_path):
+    plugin = RegisterNewSkill(
+        plugins_dir=tmp_path / "plugins",
+        archived_dir=tmp_path / "archived",
+        test_runner=lambda path: True,
+    )
+
+    result = plugin.execute(_payload())
+
+    assert result.success is False
+    assert result.data["pending_approval"] is True
+    assert "/approve generated_echo" in result.error_message
+    pending = tmp_path / "plugins" / RegisterNewSkill.PENDING_DIR
+    assert (pending / "generated_echo.py").is_file()
+    assert (pending / "generated_echo.test.py").is_file()
+    assert not (tmp_path / "plugins" / "generated_echo.py").exists()
+
+
+def test_upgrade_stays_autonomous_by_default(tmp_path):
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "generated_echo.py").write_text(_code(description="Old."))
+    (plugins / "generated_echo.test.py").write_text(TEST_SOURCE)
+    plugin = RegisterNewSkill(
+        plugins_dir=plugins,
+        archived_dir=tmp_path / "archived",
+        test_runner=lambda path: True,
+    )
+
+    result = plugin.execute(_payload(action="upgrade", code=_code(description="New.")))
+
+    assert result.success is True
+    assert 'description = "New."' in (plugins / "generated_echo.py").read_text()
+
+
+def test_initialize_can_disable_the_approval_gate(tmp_path):
+    plugin = RegisterNewSkill(
+        plugins_dir=tmp_path / "plugins",
+        test_runner=lambda path: True,
+    )
+
+    assert plugin.initialize({"require_approval": False}) is True
+    assert plugin.execute(_payload()).success is True

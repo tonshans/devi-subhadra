@@ -243,3 +243,12 @@ def test_extra_tools_prompt_combines_catalog_and_anti_amnesia_sop():
     assert "[SOP ANTI-AMNESIA]" in prompt
     assert "/mnt/agent_atelier/archived_plugins/" in prompt
     assert "restore" in prompt and "upgrade" in prompt
+
+
+def test_extra_tools_prompt_tells_the_agent_to_package_repeated_multistep_work():
+    prompt = build_extra_tools_prompt([], "/mnt/agent_atelier/archived_plugins")
+
+    assert "[SOP PAKETISASI]" in prompt
+    assert "LEBIH DARI 3 langkah" in prompt
+    assert "plugins/_template_plugin.py" in prompt
+    assert "/approve" in prompt

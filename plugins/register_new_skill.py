@@ -35,6 +35,8 @@ class RegisterNewSkill(BaseAgentPlugin):
         "restore plugin Atelier dari folder arsip."
     )
     input_schema = SkillInput
+    # Staged `create` payloads live here; the loader ignores dotted dirs.
+    PENDING_DIR = ".pending_skills"
 
     def __init__(
         self,
@@ -43,17 +45,21 @@ class RegisterNewSkill(BaseAgentPlugin):
         approver: Optional[Callable[[str, str], bool]] = None,
         archived_dir: str | Path | None = None,
         ledger: Any | None = None,
+        require_approval: bool = True,
     ) -> None:
         self._plugins_dir = Path(plugins_dir or "plugins")
         self._archived_dir = Path(archived_dir) if archived_dir else None
         self._test_runner = test_runner
-        # shortcut: no approver means no human gate; wire one before production.
+        # In-process gate; without it, `create` is staged for /approve instead.
         self._approver = approver
         self._ledger = ledger
+        self._require_approval = require_approval
 
     def initialize(self, config: dict[str, Any]) -> bool:
         if config.get("plugins_dir"):
             self._plugins_dir = Path(config["plugins_dir"])
+        if "require_approval" in config:
+            self._require_approval = bool(config["require_approval"])
         paths = config.get("paths", config)
         archived = config.get("archived_plugins_dir")
         if archived:
@@ -84,8 +90,18 @@ class RegisterNewSkill(BaseAgentPlugin):
         return self._archived_dir / f"{name}.test.py" if self._archived_dir else None
 
     def _default_runner(self, test_path: Path) -> bool:
+        # importlib mode keeps `x.test.py` importable outside the repo rootdir.
         completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", str(test_path)],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--import-mode=importlib",
+                "-p",
+                "no:cacheprovider",
+                str(test_path),
+            ],
             capture_output=True,
             text=True,
             cwd=Path.cwd(),
@@ -134,6 +150,32 @@ class RegisterNewSkill(BaseAgentPlugin):
             return self._restore(request)
         return self._create_or_upgrade(request)
 
+    def _stage(self, request: SkillInput) -> PluginOutputSchema:
+        """Hold new code until a human runs /approve; nothing active yet."""
+        staging = self._plugins_dir / self.PENDING_DIR
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
+            code_path = staging / f"{request.plugin_name}.py"
+            code_path.write_text(request.new_code or "", encoding="utf-8")
+            (staging / f"{request.plugin_name}.test.py").write_text(
+                request.new_test_code or "", encoding="utf-8"
+            )
+        except OSError as exc:
+            return self._failure(f"Could not stage plugin: {exc}")
+        return PluginOutputSchema(
+            success=False,
+            data={
+                "pending_approval": True,
+                "plugin_name": request.plugin_name,
+                "path": str(code_path),
+            },
+            error_message=(
+                f"Plugin '{request.plugin_name}' is staged for human approval; "
+                "nothing is active yet. Ask the owner to run "
+                f"/approve {request.plugin_name} or /reject {request.plugin_name}."
+            ),
+        )
+
     def _create_or_upgrade(self, request: SkillInput) -> PluginOutputSchema:
         if not request.new_code or not request.new_test_code:
             return self._failure(
@@ -154,6 +196,9 @@ class RegisterNewSkill(BaseAgentPlugin):
             return self._failure(
                 f"{request.plugin_name} is neither active nor archived; use 'create'."
             )
+
+        if request.action_type == "create" and self._require_approval:
+            return self._stage(request)
 
         if plugin_path.exists():
             plugin_source = plugin_path.read_text(encoding="utf-8")

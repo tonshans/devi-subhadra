@@ -11,8 +11,11 @@ It becomes available on every surface that calls `dispatch`.
 
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from core.budget_governor import BudgetGovernor
@@ -32,6 +35,10 @@ from core.sysinfo import cpu_temp_line, disk_space_line
 
 Handler = Callable[["CommandContext", str], Awaitable[str]]
 
+_PLUGINS_DIR = Path(__file__).resolve().parents[1] / "plugins"
+_PENDING_DIR = ".pending_skills"
+_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
 
 @dataclass
 class CommandContext:
@@ -41,6 +48,7 @@ class CommandContext:
     started_at: float = field(default_factory=time.monotonic)
     # Optional provider pool (exposes status_lines) so /status shows each key.
     provider: Any | None = None
+    plugins_dir: Path = _PLUGINS_DIR
 
 
 @dataclass(frozen=True)
@@ -294,3 +302,68 @@ async def resume_agent(ctx: CommandContext, _args: str) -> str:
     await ctx.ledger.set_system_state(AGENT_PAUSE_UNTIL_KEY, "")
     resumed = await ctx.ledger.unpause_threads()
     return f"Agent resumed ({resumed} thread(s) reopened)."
+
+
+@command("/approve", "Activate a skill staged by register_new_skill (runs its tests).")
+async def approve_skill(ctx: CommandContext, args: str) -> str:
+    name = args.strip()
+    if not name:
+        pending = _pending_skills(ctx)
+        if not pending:
+            return "No staged skills waiting for approval."
+        return "staged skills: " + ", ".join(pending) + " (use /approve <name>)"
+    if not _PLUGIN_NAME.fullmatch(name):
+        return f"invalid skill name: {name}"
+    staging = ctx.plugins_dir / _PENDING_DIR
+    code = staging / f"{name}.py"
+    test = staging / f"{name}.test.py"
+    if not code.is_file() or not test.is_file():
+        return f"no staged skill named {name}"
+
+    # Local import: plugins import core, so importing here avoids a cycle.
+    from plugins.register_new_skill import RegisterNewSkill
+
+    manager = RegisterNewSkill(
+        plugins_dir=ctx.plugins_dir,
+        archived_dir=Path(ctx.settings.paths.atelier_dir) / "archived_plugins",
+        ledger=ctx.ledger,
+        require_approval=False,
+    )
+    payload = {
+        "action_type": "create",
+        "plugin_name": name,
+        "new_code": code.read_text(encoding="utf-8"),
+        "new_test_code": test.read_text(encoding="utf-8"),
+    }
+    # execute() runs pytest and asyncio.run(); keep it off the event loop.
+    result = await asyncio.to_thread(manager.execute, payload)
+    if not result.success:
+        return f"skill {name} not activated: {result.error_message}"
+    code.unlink(missing_ok=True)
+    test.unlink(missing_ok=True)
+    return f"skill {name} is active and registered; it shows up in the tool catalog."
+
+
+@command("/reject", "Discard a staged skill without activating it.")
+async def reject_skill(ctx: CommandContext, args: str) -> str:
+    name = args.strip()
+    if not _PLUGIN_NAME.fullmatch(name):
+        return "usage: /reject <skill_name>"
+    staging = ctx.plugins_dir / _PENDING_DIR
+    removed = 0
+    for path in (staging / f"{name}.py", staging / f"{name}.test.py"):
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    if removed == 0:
+        return f"no staged skill named {name}"
+    return f"staged skill {name} discarded ({removed} file(s))."
+
+
+def _pending_skills(ctx: CommandContext) -> list[str]:
+    staging = ctx.plugins_dir / _PENDING_DIR
+    if not staging.is_dir():
+        return []
+    return sorted(
+        path.stem for path in staging.glob("*.py") if not path.name.endswith(".test.py")
+    )
