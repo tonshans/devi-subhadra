@@ -24,7 +24,7 @@ class HeadlessBrowserInput(StrictBaseModel):
 
 # 2. Implementasi Plugin
 class HeadlessBrowserPlugin(BaseAgentPlugin):
-    plugin_name = "HeadlessBrowser"
+    plugin_name = "headless_browser"
     description = "Mensimulasikan agen membuka web browser (Chromium) di terminal untuk membaca tren di Threads dan X secara asinkron tanpa API resmi."
     input_schema: Type[StrictBaseModel] = HeadlessBrowserInput
 

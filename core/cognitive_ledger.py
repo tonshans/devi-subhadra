@@ -51,6 +51,15 @@ _TABLES = {
             "is_archived",
         },
     ),
+    "plugin_registry": (
+        "plugin_name",
+        {
+            "tier_type",
+            "description_summary",
+            "last_used_at",
+            "is_archived",
+        },
+    ),
     "ledger_threads": (
         "thread_id",
         {
@@ -391,6 +400,85 @@ class CognitiveLedger:
         async with self._engine.connect() as connection:
             rows = await connection.execute(statement)
             return [dict(row) for row in rows.mappings().all()]
+
+    async def register_plugin(
+        self, plugin_name: str, tier_type: str, description_summary: str
+    ) -> None:
+        """Upsert a discovered plugin; usage history is preserved on conflict."""
+        if tier_type not in {"CORE", "ATELIER"}:
+            raise ValueError(f"invalid tier_type: {tier_type}")
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                self._insert("plugin_registry")
+                .values(
+                    plugin_name=plugin_name,
+                    tier_type=tier_type,
+                    description_summary=description_summary,
+                    last_used_at=utc_now_text(),
+                    is_archived=0,
+                    is_backup=False,
+                )
+                .on_conflict_do_update(
+                    index_elements=[table.c.plugin_name],
+                    set_={
+                        "tier_type": tier_type,
+                        "description_summary": description_summary,
+                        "is_archived": 0,
+                        "is_backup": False,
+                    },
+                )
+            )
+
+    async def log_plugin_usage(self, plugin_name: str) -> bool:
+        """Stamp last_used_at; False means the plugin was never registered."""
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.plugin_name == plugin_name)
+                .values(last_used_at=utc_now_text(), is_backup=False)
+            )
+            return result.rowcount > 0
+
+    async def list_plugins(
+        self, tier_type: str | None = None, include_archived: bool = False
+    ) -> list[dict]:
+        table = self._table("plugin_registry")
+        statement = select(table)
+        if tier_type is not None:
+            statement = statement.where(table.c.tier_type == tier_type)
+        if not include_archived:
+            statement = statement.where(table.c.is_archived == 0)
+        statement = statement.order_by(table.c.plugin_name.asc())
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_stale_plugins(self, cutoff: str) -> list[dict]:
+        """Active ATELIER plugins untouched before `cutoff` (UTC text)."""
+        table = self._table("plugin_registry")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table).where(
+                    table.c.tier_type == "ATELIER",
+                    table.c.is_archived == 0,
+                    table.c.last_used_at < cutoff,
+                )
+            )
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def set_plugin_archived(
+        self, plugin_name: str, archived: bool = True
+    ) -> bool:
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.plugin_name == plugin_name)
+                .values(is_archived=1 if archived else 0, is_backup=False)
+            )
+            return result.rowcount > 0
 
     async def list_ledger_entries(
         self,

@@ -11,7 +11,7 @@ from core.budget_governor import BudgetGovernor
 from core.cognitive_ledger import CognitiveLedger
 from core.provider_pool import AllProvidersUnavailable
 from core.runtime import MissionBlockedError, Runtime, load_plugins, scheduler_loop
-from core.schemas import MissionReply
+from core.schemas import MissionReply, PluginOutputSchema
 
 
 async def _setup(tmp_path):
@@ -323,10 +323,122 @@ def test_run_plugin_executes_registered_plugin(tmp_path):
     asyncio.run(scenario())
 
 
+def test_run_plugin_logs_usage_after_success(tmp_path, monkeypatch):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        class Echo:
+            def execute(self, payload):
+                return PluginOutputSchema(success=True, data={})
+
+        calls = []
+
+        async def fake_log(name):
+            calls.append(name)
+            return True
+
+        monkeypatch.setattr(ledger, "log_plugin_usage", fake_log)
+        runtime = Runtime(ledger, governor, plugins={"echo": Echo()}, worker=None)
+
+        await runtime.run_plugin("echo", {})
+
+        assert calls == ["echo"]
+
+    asyncio.run(scenario())
+
+
+def test_run_plugin_lazy_loads_an_atelier_plugin(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        plugin_dir = tmp_path / "plugins"
+        plugin_dir.mkdir()
+        (plugin_dir / "lazy_echo.py").write_text(
+            "from typing import Any, Dict\n"
+            "from core.base_plugin import BaseAgentPlugin\n"
+            "from core.schemas import PluginOutputSchema, StrictBaseModel\n"
+            "class Input(StrictBaseModel):\n"
+            "    text: str\n"
+            "class LazyEcho(BaseAgentPlugin):\n"
+            "    plugin_name = 'lazy_echo'\n"
+            "    description = 'Echo lazily.'\n"
+            "    input_schema = Input\n"
+            "    def initialize(self, config): return True\n"
+            "    def execute(self, payload):\n"
+            "        return PluginOutputSchema(success=True, data={'text': payload['text']})\n"
+            "    def shutdown(self): return None\n",
+            encoding="utf-8",
+        )
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins={},
+            plugins_dir=plugin_dir,
+            plugin_config={},
+            worker=None,
+        )
+
+        output = await runtime.run_plugin("lazy_echo", {"text": "hi"})
+
+        assert output.success is True
+        assert output.data == {"text": "hi"}
+        assert "lazy_echo" in runtime._plugins
+
+    asyncio.run(scenario())
+
+
+def test_sync_plugin_registry_splits_core_and_atelier(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        class CoreStub:
+            description = "Always available."
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins={"core_tool": CoreStub()},
+            plugin_catalog={"lazy_tool": "On demand."},
+            worker=None,
+        )
+
+        await runtime.sync_plugin_registry()
+
+        rows = await ledger.list_plugins(include_archived=True)
+        assert {row["plugin_name"]: row["tier_type"] for row in rows} == {
+            "core_tool": "CORE",
+            "lazy_tool": "ATELIER",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_mission_prompt_includes_atelier_catalog_and_sop(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        await ledger.register_plugin("lazy_tool", "ATELIER", "On demand.")
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        prompts = []
+
+        async def worker(prompt):
+            prompts.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime.handle_mission(thread_id, "halo")
+
+        assert "[KATALOG ALAT EKSTRA]" in prompts[0]
+        assert "- lazy_tool: On demand." in prompts[0]
+        assert "[SOP ANTI-AMNESIA]" in prompts[0]
+        assert "equip_tool" in prompts[0]
+
+    asyncio.run(scenario())
+
+
 def test_load_plugins_initializes_each_with_config(tmp_path):
     repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
 
-    plugins = load_plugins(
+    plugins, catalog = load_plugins(
         repo_plugins,
         {
             "paths": {
@@ -337,6 +449,7 @@ def test_load_plugins_initializes_each_with_config(tmp_path):
     )
 
     assert "file_manager" in plugins
+    assert "headless_browser" in catalog
     assert (tmp_path / "workspace").is_dir()
     assert (tmp_path / "atelier").is_dir()
 
@@ -569,6 +682,9 @@ def test_scheduled_tick_runs_sleep_mode_once_per_night(tmp_path):
         runs = []
 
         class FakeMemory:
+            async def decay_plugins(self, now=None):
+                return 0
+
             async def vectorize_pending(self, now=None):
                 runs.append(now)
                 return "report"
@@ -604,6 +720,9 @@ def test_sleep_mode_failure_is_logged_and_not_retried_same_night(tmp_path, caplo
         class ExplodingMemory:
             def __init__(self):
                 self.calls = 0
+
+            async def decay_plugins(self, now=None):
+                return 0
 
             async def vectorize_pending(self, now=None):
                 self.calls += 1

@@ -114,6 +114,7 @@ class ContextCompiler:
         entries: list[dict],
         long_term: list[dict],
         query_text: str,
+        extra_tools: str = "",
     ) -> str:
         directive_text = "\n".join(
             f"[{row['directive_type']}] {row['content']}" for row in directives
@@ -133,16 +134,17 @@ class ContextCompiler:
         entry_text = "\n".join(f"[{row['tag']}] {row['content']}" for row in entries)
         long_term_text = ContextCompiler._render_long_term(long_term)
 
-        return "\n\n".join(
-            [
-                "CORE DIRECTIVES:\n" + (directive_text or "(none)"),
-                "SEMANTIC MEMORY:\n" + (memory_text or "(none)"),
-                "ACTIVE THREAD:\n" + thread_text,
-                "LEDGER ENTRIES:\n" + (entry_text or "(none)"),
-                "LONG-TERM SEMANTIC RECALL:\n" + (long_term_text or "(none)"),
-                "USER QUERY:\n" + query_text,
-            ]
-        )
+        sections = [
+            "CORE DIRECTIVES:\n" + (directive_text or "(none)"),
+            "SEMANTIC MEMORY:\n" + (memory_text or "(none)"),
+            "ACTIVE THREAD:\n" + thread_text,
+            "LEDGER ENTRIES:\n" + (entry_text or "(none)"),
+            "LONG-TERM SEMANTIC RECALL:\n" + (long_term_text or "(none)"),
+        ]
+        if extra_tools:
+            sections.append("TOOL CATALOG & SOP:\n" + extra_tools)
+        sections.append("USER QUERY:\n" + query_text)
+        return "\n\n".join(sections)
 
     async def micro_consolidate_entries(self, thread_id: str) -> bool:
         oldest = await self._ledger.list_oldest_ledger_entries(thread_id, limit=20)
@@ -163,13 +165,14 @@ class ContextCompiler:
         thread_id: str,
         query_text: str,
         rpm_pressure_high: bool,
+        extra_tools: str = "",
     ) -> CompiledContext:
         directives, memories, thread, entries = await self._load_layers(
             thread_id, rpm_pressure_high
         )
         long_term = await self._retrieve_long_term(query_text)
         prompt = self._render_prompt(
-            directives, memories, thread, entries, long_term, query_text
+            directives, memories, thread, entries, long_term, query_text, extra_tools
         )
         token_count = self.estimate_tokens(prompt)
 
@@ -177,7 +180,13 @@ class ContextCompiler:
         while token_count > self.max_context_tokens and long_term:
             long_term = long_term[:-1]
             prompt = self._render_prompt(
-                directives, memories, thread, entries, long_term, query_text
+                directives,
+                memories,
+                thread,
+                entries,
+                long_term,
+                query_text,
+                extra_tools,
             )
             token_count = self.estimate_tokens(prompt)
 
@@ -198,7 +207,13 @@ class ContextCompiler:
                     )
                 )
                 prompt = self._render_prompt(
-                    directives, memories, thread, entries, long_term, query_text
+                    directives,
+                    memories,
+                    thread,
+                    entries,
+                    long_term,
+                    query_text,
+                    extra_tools,
                 )
                 token_count = self.estimate_tokens(prompt)
 

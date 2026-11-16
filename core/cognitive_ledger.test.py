@@ -632,3 +632,83 @@ def test_list_ledger_entries_can_exclude_vectorized_rows(tmp_path):
         assert [row["entry_id"] for row in rows] == [keep]
 
     asyncio.run(scenario())
+
+
+def test_register_plugin_upserts_without_resetting_last_used_at(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("echo", "ATELIER", "Echo the payload.")
+        await ledger.update("plugin_registry", "echo", last_used_at="2020-01-01 00:00:00")
+
+        await ledger.register_plugin("echo", "ATELIER", "Echo v2.")
+
+        row = await ledger.read("plugin_registry", "echo")
+        assert row["description_summary"] == "Echo v2."
+        assert row["last_used_at"] == "2020-01-01 00:00:00"
+
+        with pytest.raises(ValueError):
+            await ledger.register_plugin("bad", "TIER3", "nope")
+
+    asyncio.run(scenario())
+
+
+def test_log_plugin_usage_updates_known_plugin_only(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("echo", "ATELIER", "Echo the payload.")
+        await ledger.update("plugin_registry", "echo", last_used_at="2020-01-01 00:00:00")
+
+        assert await ledger.log_plugin_usage("echo") is True
+        row = await ledger.read("plugin_registry", "echo")
+        assert row["last_used_at"] > "2020-01-01 00:00:00"
+
+        assert await ledger.log_plugin_usage("ghost") is False
+        assert await ledger.read("plugin_registry", "ghost") is None
+
+    asyncio.run(scenario())
+
+
+def test_list_plugins_filters_tier_and_archived(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("file_manager", "CORE", "Files.")
+        await ledger.register_plugin("echo", "ATELIER", "Echo.")
+        await ledger.register_plugin("old_tool", "ATELIER", "Old.")
+        await ledger.set_plugin_archived("old_tool", True)
+
+        active = await ledger.list_plugins()
+        assert [row["plugin_name"] for row in active] == ["echo", "file_manager"]
+
+        atelier = await ledger.list_plugins("ATELIER")
+        assert [row["plugin_name"] for row in atelier] == ["echo"]
+
+        everything = await ledger.list_plugins(include_archived=True)
+        assert {row["plugin_name"] for row in everything} == {
+            "echo",
+            "file_manager",
+            "old_tool",
+        }
+
+        assert await ledger.set_plugin_archived("ghost", True) is False
+
+    asyncio.run(scenario())
+
+
+def test_list_stale_plugins_returns_only_old_active_atelier_rows(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("stale", "ATELIER", "Stale.")
+        await ledger.register_plugin("fresh", "ATELIER", "Fresh.")
+        await ledger.register_plugin("core_stale", "CORE", "Core.")
+        await ledger.register_plugin("archived_stale", "ATELIER", "Archived.")
+        for name in ("stale", "core_stale", "archived_stale"):
+            await ledger.update(
+                "plugin_registry", name, last_used_at="2026-10-01 00:00:00"
+            )
+        await ledger.set_plugin_archived("archived_stale", True)
+
+        rows = await ledger.list_stale_plugins("2026-10-17 00:00:00")
+
+        assert [row["plugin_name"] for row in rows] == ["stale"]
+
+    asyncio.run(scenario())

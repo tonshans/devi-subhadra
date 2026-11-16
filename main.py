@@ -124,15 +124,18 @@ def build_runtime(
     deliver_file=None,
 ) -> Runtime:
     """Production composition root: plugins, LLM worker, wake-up ping."""
-    plugins = load_plugins(
-        plugins_dir or Path(__file__).resolve().parent / "plugins",
-        {
-            "paths": {
-                "workspace_dir": settings.paths.workspace_dir,
-                "atelier_dir": settings.paths.atelier_dir,
-            }
+    plugin_dir = Path(plugins_dir or Path(__file__).resolve().parent / "plugins")
+    archived_dir = Path(settings.paths.atelier_dir) / "archived_plugins"
+    plugin_config = {
+        "paths": {
+            "workspace_dir": settings.paths.workspace_dir,
+            "atelier_dir": settings.paths.atelier_dir,
         },
-    )
+        "plugins_dir": str(plugin_dir),
+        "archived_plugins_dir": str(archived_dir),
+        "ledger": ledger,
+    }
+    plugins, catalog = load_plugins(plugin_dir, plugin_config)
     if worker is None:
         worker = build_worker(settings, governor)
     return Runtime(
@@ -147,6 +150,10 @@ def build_runtime(
         output_usd_per_million=settings.pricing.output_usd_per_million,
         deliver_file=deliver_file,
         notify=getattr(gateway, "notify", None),
+        plugin_catalog=catalog,
+        plugins_dir=plugin_dir,
+        plugin_config=plugin_config,
+        archived_plugins_dir=archived_dir,
     )
 
 
@@ -216,6 +223,8 @@ def create_app(
     async def lifespan(_: FastAPI):
         await ledger.initialize()
         await load_governor_overrides(ledger, governor)
+        if runtime is not None:
+            await runtime.sync_plugin_registry()
         if database is not None and database.fallback:
             await ledger.set_system_state("fallback_since", utc_now_text())
         gateway.wake_up_ping()

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -15,6 +17,7 @@ from core.vector_store import VectorStore
 
 DEDUP_SIMILARITY_THRESHOLD = 0.40
 DECAY_GRACE_DAYS = 30
+PLUGIN_DECAY_GRACE_DAYS = 30
 ARCHIVE_SCORE_THRESHOLD = 20
 LEDGER_VECTOR_AGE_DAYS = 30
 DISCOVERY_VECTOR_AGE_DAYS = 1
@@ -108,9 +111,16 @@ class MemoryManager:
         self,
         ledger: CognitiveLedger,
         vector_store: VectorStore | None = None,
+        *,
+        plugins_dir: str | Path | None = None,
+        archived_plugins_dir: str | Path | None = None,
     ) -> None:
         self._ledger = ledger
         self._vector_store = vector_store
+        self._plugins_dir = Path(plugins_dir) if plugins_dir else None
+        self._archived_plugins_dir = (
+            Path(archived_plugins_dir) if archived_plugins_dir else None
+        )
 
     @property
     def vector_store(self) -> VectorStore:
@@ -297,5 +307,32 @@ class MemoryManager:
                 fields["is_archived"] = 1
                 archived += 1
             await self._ledger.update("semantic_memory", row["rule_id"], **fields)
+
+        return archived
+
+    async def decay_plugins(self, now: datetime | None = None) -> int:
+        """Archive ATELIER plugins untouched for 30 days: move files, then SQL."""
+        if self._plugins_dir is None:
+            return 0
+        now = now or datetime.now(timezone.utc)
+        cutoff = _utc_text(now - timedelta(days=PLUGIN_DECAY_GRACE_DAYS))
+        archived_dir = self._archived_plugins_dir or (
+            self._plugins_dir.parent / "archived_plugins"
+        )
+        archived = 0
+
+        for row in await self._ledger.list_stale_plugins(cutoff):
+            name = str(row["plugin_name"])
+            if Path(name).name != name:
+                continue
+            plugin_path = self._plugins_dir / f"{name}.py"
+            if not plugin_path.is_file():
+                continue
+            archived_dir.mkdir(parents=True, exist_ok=True)
+            for path in (plugin_path, self._plugins_dir / f"{name}.test.py"):
+                if path.is_file():
+                    shutil.move(str(path), str(archived_dir / path.name))
+            if await self._ledger.set_plugin_archived(name, True):
+                archived += 1
 
         return archived

@@ -25,7 +25,7 @@ from core.context_compiler import ContextCompiler
 from core.healer_node import HealerNode, ProposePatch
 from core.inner_monologue import InnerMonologue
 from core.memory_manager import MemoryManager
-from core.plugin_loader import PluginLoader
+from core.plugin_loader import PluginLoader, build_extra_tools_prompt
 from core.provider_pool import AllProvidersUnavailable
 from core.schemas import MissionReply, PluginOutputSchema
 from core.supervisor import Supervisor
@@ -66,9 +66,10 @@ async def _no_patch(attempt: int, error: str) -> dict:
 
 def load_plugins(
     plugins_dir: str | Path, config: dict
-) -> dict[str, Any]:
-    """Discover and initialize plugins once, at startup, with real config."""
-    plugins = PluginLoader(plugins_dir).load_all()
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Discover plugins once: eager Tier 1 tools plus the Tier 2 catalog."""
+    loader = PluginLoader(plugins_dir)
+    plugins = loader.load_all()
     for name, plugin in list(plugins.items()):
         try:
             ready = plugin.initialize(config)
@@ -76,7 +77,7 @@ def load_plugins(
             ready = False
         if not ready:
             plugins.pop(name, None)
-    return plugins
+    return plugins, loader.catalog
 
 
 class Runtime:
@@ -103,6 +104,10 @@ class Runtime:
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         supervisor_timeout_seconds: float = 300,
         vector_store: VectorStore | None = None,
+        plugin_catalog: Optional[dict[str, str]] = None,
+        plugins_dir: Optional[str | Path] = None,
+        plugin_config: Optional[dict[str, Any]] = None,
+        archived_plugins_dir: Optional[str | Path] = None,
     ) -> None:
         self._ledger = ledger
         self._governor = governor
@@ -112,13 +117,24 @@ class Runtime:
             HealerNode(), timeout_seconds=supervisor_timeout_seconds
         )
         self._plugins = plugins or {}
+        self._plugin_catalog = dict(plugin_catalog or {})
+        self._plugins_dir = Path(plugins_dir) if plugins_dir else None
+        self._plugin_config = plugin_config or {}
+        self._archived_plugins_dir = str(
+            archived_plugins_dir or "/mnt/agent_atelier/archived_plugins"
+        )
         self._worker = worker
         self._propose_patch = propose_patch or _no_patch
         self._cost = cost_usd
         self._initiative_cost = initiative_cost_usd
         self._input_rate = input_usd_per_million
         self._output_rate = output_usd_per_million
-        self._memory = memory or MemoryManager(ledger, vector_store=store)
+        self._memory = memory or MemoryManager(
+            ledger,
+            vector_store=store,
+            plugins_dir=self._plugins_dir,
+            archived_plugins_dir=self._archived_plugins_dir,
+        )
         self._monologue = monologue or InnerMonologue(governor)
         self._monologue_every_cycles = max(1, monologue_every_cycles)
         self._tick_count = 0
@@ -261,6 +277,19 @@ class Runtime:
             + completion_tokens / 1_000_000 * self._output_rate
         )
 
+    async def _tool_catalog_prompt(self) -> str:
+        rows = await self._ledger.list_plugins("ATELIER", include_archived=False)
+        return build_extra_tools_prompt(rows, self._archived_plugins_dir)
+
+    async def sync_plugin_registry(self) -> None:
+        """Seed SQL from disk once per startup; SQL then owns is_archived."""
+        for name, plugin in self._plugins.items():
+            await self._ledger.register_plugin(
+                name, "CORE", getattr(plugin, "description", name)
+            )
+        for name, description in self._plugin_catalog.items():
+            await self._ledger.register_plugin(name, "ATELIER", description)
+
     async def handle_mission(
         self, thread_id: str, query: str, initiator: str = "Telegram"
     ) -> str:
@@ -280,7 +309,12 @@ class Runtime:
             return gate
 
         pressure = self._governor.check_rate_limit() == WAITING_FOR_QUOTA
-        context = await self._compiler.compile_context(thread_id, query, pressure)
+        context = await self._compiler.compile_context(
+            thread_id,
+            query,
+            pressure,
+            extra_tools=await self._tool_catalog_prompt(),
+        )
 
         paid = thread["origin"] != "HUMAN"
         priced = self._input_rate > 0 or self._output_rate > 0
@@ -399,18 +433,38 @@ class Runtime:
                 reply = f"{reply}\nFile not sent ({path}): {exc}"
         return reply
 
+    def _load_plugin(self, name: str) -> Any | None:
+        if self._plugins_dir is None:
+            return None
+        plugin = PluginLoader(self._plugins_dir).load_plugin(name)
+        if plugin is None:
+            return None
+        try:
+            if not plugin.initialize(self._plugin_config):
+                return None
+        except Exception:
+            return None
+        return plugin
+
     async def run_plugin(self, name: str, payload: dict) -> PluginOutputSchema:
         if await self.blocked():
             raise MissionBlockedError("Kill switch is active")
         plugin = self._plugins.get(name)
         if plugin is None:
+            plugin = await asyncio.to_thread(self._load_plugin, name)
+            if plugin is not None:
+                self._plugins[name] = plugin
+        if plugin is None:
             return PluginOutputSchema(
                 success=False, data={}, error_message=f"Unknown plugin: {name}"
             )
-        return await asyncio.to_thread(plugin.execute, payload)
+        output = await asyncio.to_thread(plugin.execute, payload)
+        if output.success:
+            await self._ledger.log_plugin_usage(name)
+        return output
 
     async def sleep_mode_tick(self, now: datetime | None = None) -> Any:
-        """Nightly batch vectorization: zero LLM tokens, once per local date."""
+        """Nightly batch maintenance: zero LLM tokens, once per local date."""
         now = now or datetime.now()
         if now.hour not in SLEEP_HOURS:
             return None
@@ -418,7 +472,11 @@ class Runtime:
         if await self._ledger.get_system_state(SLEEP_MODE_LAST_RUN_KEY) == today:
             return None
         try:
-            return await self._memory.vectorize_pending()
+            try:
+                await self._memory.decay_plugins(now)
+            except Exception:
+                logger.exception("sleep-mode plugin decay failed; retrying next night")
+            return await self._memory.vectorize_pending(now)
         except Exception:
             # One attempt per night: a missing model or a dead Chroma must not
             # hammer the disk all night; rows stay is_vectorized=False for retry.

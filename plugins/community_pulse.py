@@ -9,7 +9,7 @@ class CommunityPulseInput(StrictBaseModel):
     subreddit: str = Field(default="MachineLearning", description="Nama subreddit tanpa awalan /r/")
 
 class CommunityPulsePlugin(BaseAgentPlugin):
-    plugin_name = "CommunityPulse"
+    plugin_name = "community_pulse"
     description = "Membaca sentimen komunitas dan tren real-time via Reddit JSON API."
     input_schema: Type[StrictBaseModel] = CommunityPulseInput
 

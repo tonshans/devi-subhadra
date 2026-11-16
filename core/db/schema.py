@@ -59,6 +59,20 @@ semantic_memory = Table(
     ),
 )
 
+plugin_registry = Table(
+    "plugin_registry",
+    metadata,
+    Column("plugin_name", String(64), primary_key=True),
+    Column("tier_type", String(8), nullable=False),
+    Column("description_summary", Text, nullable=False),
+    Column("last_used_at", String(32), nullable=False, default=utc_now_text),
+    Column("is_archived", Integer, nullable=False, default=0),
+    Column("is_backup", Boolean, nullable=False, default=False, server_default=false()),
+    CheckConstraint(
+        "tier_type IN ('CORE', 'ATELIER')", name="ck_plugin_registry_tier"
+    ),
+)
+
 ledger_threads = Table(
     "ledger_threads",
     metadata,
@@ -211,6 +225,7 @@ provider_key_usage = Table(
 TABLE_ORDER = (
     core_directives,
     semantic_memory,
+    plugin_registry,
     ledger_threads,
     ledger_entries,
     atelier_discoveries,

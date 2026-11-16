@@ -481,3 +481,87 @@ def test_vectorize_pending_without_rows_never_touches_the_store(tmp_path):
         assert store.calls == []
 
     asyncio.run(scenario())
+
+
+def _write_plugin(directory, name: str, with_test: bool = True) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.py").write_text("class Stub:\n    pass\n")
+    if with_test:
+        (directory / f"{name}.test.py").write_text("def test_stub():\n    pass\n")
+
+
+def test_decay_plugins_archives_31_day_old_atelier_tool(tmp_path):
+    async def scenario():
+        plugins_dir = tmp_path / "plugins"
+        archived_dir = tmp_path / "archived_plugins"
+        ledger = CognitiveLedger(tmp_path / "ledger.db")
+        await ledger.initialize()
+        manager = MemoryManager(
+            ledger,
+            plugins_dir=plugins_dir,
+            archived_plugins_dir=archived_dir,
+        )
+        _write_plugin(plugins_dir, "old_tool")
+        await ledger.register_plugin("old_tool", "ATELIER", "Old tool.")
+        await ledger.update(
+            "plugin_registry",
+            "old_tool",
+            last_used_at=(NOW - timedelta(days=31)).strftime(DB_TIME),
+        )
+
+        archived = await manager.decay_plugins(now=NOW)
+
+        assert archived == 1
+        assert not (plugins_dir / "old_tool.py").exists()
+        assert not (plugins_dir / "old_tool.test.py").exists()
+        assert (archived_dir / "old_tool.py").is_file()
+        assert (archived_dir / "old_tool.test.py").is_file()
+        row = await ledger.read("plugin_registry", "old_tool")
+        assert row["is_archived"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_decay_plugins_keeps_core_recent_and_archived_rows(tmp_path):
+    async def scenario():
+        plugins_dir = tmp_path / "plugins"
+        archived_dir = tmp_path / "archived_plugins"
+        ledger = CognitiveLedger(tmp_path / "ledger.db")
+        await ledger.initialize()
+        manager = MemoryManager(
+            ledger,
+            plugins_dir=plugins_dir,
+            archived_plugins_dir=archived_dir,
+        )
+        old = (NOW - timedelta(days=40)).strftime(DB_TIME)
+        for name, tier in (
+            ("core_tool", "CORE"),
+            ("recent_tool", "ATELIER"),
+            ("archived_tool", "ATELIER"),
+        ):
+            _write_plugin(plugins_dir, name)
+            await ledger.register_plugin(name, tier, "Tool.")
+            await ledger.update("plugin_registry", name, last_used_at=old)
+        await ledger.update(
+            "plugin_registry", "recent_tool", last_used_at=NOW.strftime(DB_TIME)
+        )
+        await ledger.set_plugin_archived("archived_tool", True)
+
+        archived = await manager.decay_plugins(now=NOW)
+
+        assert archived == 0
+        assert (plugins_dir / "core_tool.py").is_file()
+        assert (plugins_dir / "recent_tool.py").is_file()
+        assert (plugins_dir / "archived_tool.py").is_file()
+        assert not archived_dir.exists()
+
+    asyncio.run(scenario())
+
+
+def test_decay_plugins_without_a_plugins_dir_is_a_noop(tmp_path):
+    async def scenario():
+        ledger, manager = await _setup(tmp_path)
+
+        assert await manager.decay_plugins(now=NOW) == 0
+
+    asyncio.run(scenario())

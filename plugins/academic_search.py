@@ -9,7 +9,7 @@ class AcademicSearchInput(StrictBaseModel):
     max_results: int = Field(default=3, ge=1, le=10)
 
 class AcademicSearchPlugin(BaseAgentPlugin):
-    plugin_name = "AcademicSearch"
+    plugin_name = "academic_search"
     description = "Mencari publikasi ilmiah dan paper riset terbaru via OpenAlex API."
     input_schema: Type[StrictBaseModel] = AcademicSearchInput
 
