@@ -25,6 +25,7 @@ from core.cognitive_ledger import (
     CognitiveLedger,
 )
 from core.context_compiler import ContextCompiler
+from core.halt import find_halt_file, halt_message
 from core.healer_node import HealerNode, ProposePatch
 from core.inner_monologue import InnerMonologue
 from core.memory_manager import MemoryManager
@@ -109,6 +110,8 @@ class Runtime:
         initiative: Optional[Initiative] = None,
         curiosity_daily_limit: int = 3,
         audit_enabled: bool = True,
+        halt_dir: str | Path = "/mnt/workspace",
+        workspace_dir: str | Path = ".",
         deliver_file: Optional[Callable[[str], Awaitable[None]]] = None,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         supervisor_timeout_seconds: float = 300,
@@ -151,6 +154,8 @@ class Runtime:
         self._initiative = initiative or self._default_initiative
         self._curiosity_limit = curiosity_daily_limit
         self._audit_enabled = audit_enabled
+        self._halt_dir = halt_dir
+        self._workspace_dir = workspace_dir
         self._deliver_file = deliver_file
         self._notify = notify
 
@@ -185,7 +190,7 @@ class Runtime:
 
     async def _curiosity_cycle(self) -> None:
         """One LLM thought per cycle, capped per UTC day, from the idle loop."""
-        if self._worker is None or self._curiosity_limit <= 0:
+        if self._worker is None or self._curiosity_limit <= 0 or self.halt_file():
             return
         key = f"curiosity_count:{datetime.now(timezone.utc):%Y-%m-%d}"
         used = int(await self._ledger.get_system_state(key) or 0)
@@ -246,7 +251,15 @@ class Runtime:
             result_id=entry_id,
         )
 
+    def halt_file(self) -> str | None:
+        return find_halt_file(self._halt_dir, self._workspace_dir)
+
+    def halt_notice(self) -> str | None:
+        return halt_message(self._halt_dir, self._workspace_dir)
+
     async def blocked(self) -> bool:
+        if self.halt_file() is not None:
+            return True
         return await self._ledger.get_system_state(KILL_SWITCH_KEY) == "1"
 
     def _model_name(self) -> str | None:
@@ -407,10 +420,6 @@ class Runtime:
         trigger: str | None = None,
     ) -> str:
         await self.auto_resume()
-        if await self.blocked():
-            raise MissionBlockedError("Kill switch is active")
-        if self._worker is None:
-            raise RuntimeError("No worker configured")
 
         thread = await self._ledger.read("ledger_threads", thread_id)
         if thread is None:
@@ -421,6 +430,27 @@ class Runtime:
         trace_id = str(uuid.uuid4())
         step = 0
         last_audit_id: str | None = None
+
+        notice = self.halt_notice()
+        if notice is not None:
+            await self._audit(
+                trace_id=trace_id,
+                step=1,
+                thread_id=thread_id,
+                trigger=trigger,
+                origin=side,
+                prompt=query,
+                prompt_tokens=self._compiler.estimate_tokens(query),
+                action="BLOCKED",
+                response=notice,
+                outcome="BLOCKED",
+            )
+            return notice
+        if await self.blocked():
+            raise MissionBlockedError("Kill switch is active")
+        if self._worker is None:
+            raise RuntimeError("No worker configured")
+
         gate = await self._limit_gate(side)
         if gate is not None:
             # A refused mission still leaves one audit row behind.
@@ -484,6 +514,23 @@ class Runtime:
             return "Budget exhausted; initiative paused."
 
         while True:
+            notice = self.halt_notice()
+            if notice is not None:
+                # Stop mid-mission: no further LLM call, tool run, or billing.
+                step += 1
+                last_audit_id = await self._audit(
+                    trace_id=trace_id,
+                    step=step,
+                    thread_id=thread_id,
+                    trigger=trigger,
+                    origin=side,
+                    action="BLOCKED",
+                    response=notice,
+                    outcome="BLOCKED",
+                )
+                reply = notice
+                worker_succeeded = False
+                break
             round_start = len(usages)
             started = time.perf_counter()
             round_error: str | None = None
@@ -606,6 +653,24 @@ class Runtime:
                 or not plugin
                 or tool_rounds >= MAX_TOOL_ROUNDS
             ):
+                break
+            notice = self.halt_notice()
+            if notice is not None:
+                # Never start a side-effecting tool after a halt request.
+                step += 1
+                last_audit_id = await self._audit(
+                    trace_id=trace_id,
+                    step=step,
+                    thread_id=thread_id,
+                    trigger=trigger,
+                    origin=side,
+                    action="BLOCKED",
+                    action_target=plugin,
+                    response=notice,
+                    outcome="BLOCKED",
+                )
+                reply = notice
+                worker_succeeded = False
                 break
             tool_rounds += 1
             tool_started = time.perf_counter()
@@ -734,6 +799,9 @@ class Runtime:
         return plugin
 
     async def run_plugin(self, name: str, payload: dict) -> PluginOutputSchema:
+        notice = self.halt_notice()
+        if notice is not None:
+            raise MissionBlockedError(notice)
         if await self.blocked():
             raise MissionBlockedError("Kill switch is active")
         plugin = self._plugins.get(name)

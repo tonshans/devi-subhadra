@@ -27,6 +27,8 @@ from core.cognitive_ledger import (
     CognitiveLedger,
 )
 from core.config_loader import AppConfig
+from core.halt import halt_message, resolve_halt_dir
+from core.sysinfo import cpu_temp_line, disk_space_line
 
 Handler = Callable[["CommandContext", str], Awaitable[str]]
 
@@ -142,9 +144,14 @@ async def status(ctx: CommandContext, _args: str) -> str:
         if governor.agent_freetime
         else "off"
     )
+    halt = halt_message(settings.halt_dir, settings.paths.workspace_dir)
+    halt_dir = resolve_halt_dir(settings.halt_dir, settings.paths.workspace_dir)
     lines = [
         f"agent: {settings.agent_name}",
         f"state: {state}",
+        f"halt: {halt or f'none ({halt_dir})'}",
+        disk_space_line(settings.paths.workspace_dir),
+        cpu_temp_line(),
         f"uptime: {_uptime(time.monotonic() - ctx.started_at)}",
         f"db: {ctx.ledger.dialect}",
         f"model: {settings.models.tier_2_heavy} "

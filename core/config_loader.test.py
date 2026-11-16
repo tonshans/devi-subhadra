@@ -282,3 +282,12 @@ def test_audit_enabled_defaults_to_true_and_accepts_false(tmp_path):
     data["audit_enabled"] = False
 
     assert load_config(_write_config(tmp_path, data)).audit_enabled is False
+
+
+def test_halt_dir_defaults_to_the_shared_mount(tmp_path):
+    config = load_config(_write_config(tmp_path, _valid_config()))
+    assert config.halt_dir == "/mnt/workspace"
+
+    data = _valid_config()
+    data["halt_dir"] = "./mnt/workspace"
+    assert load_config(_write_config(tmp_path, data)).halt_dir == "./mnt/workspace"

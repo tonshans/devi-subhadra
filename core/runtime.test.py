@@ -1214,3 +1214,110 @@ def test_resume_mission_is_audited_as_scheduler_trigger(tmp_path):
         assert rows[0]["trigger"] == "SCHEDULER_RESUME"
 
     asyncio.run(scenario())
+
+
+def test_halt_file_blocks_a_mission_without_calling_the_worker(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        (tmp_path / "HALT").write_text("")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker, halt_dir=tmp_path)
+
+        reply = await runtime.handle_mission(thread_id, "halo")
+
+        assert "HALT" in reply
+        assert calls == []
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Active"
+        rows = await ledger.list_audit_logs(thread_id)
+        assert rows[-1]["action"] == "BLOCKED"
+        assert rows[-1]["outcome"] == "BLOCKED"
+
+    asyncio.run(scenario())
+
+
+def test_halt_file_stops_an_in_flight_mission_before_the_tool_runs(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        plugin = _EchoPlugin()
+
+        async def worker(prompt):
+            (tmp_path / "STOP").write_text("")
+            return MissionReply(
+                reply="mencari",
+                plugin="echo",
+                plugin_payload={"text": "halo"},
+            )
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins={"echo": plugin},
+            worker=worker,
+            halt_dir=tmp_path,
+        )
+
+        reply = await runtime.handle_mission(thread_id, "pakai tool")
+
+        assert "STOP" in reply
+        assert plugin.payloads == []
+        rows = await ledger.list_audit_logs(thread_id)
+        assert rows[-1]["action"] == "BLOCKED"
+        assert rows[-1]["action_target"] == "echo"
+
+    asyncio.run(scenario())
+
+
+def test_removing_the_halt_file_resumes_work(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        halt = tmp_path / "HALT"
+        halt.write_text("")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker, halt_dir=tmp_path)
+
+        assert "HALT" in await runtime.handle_mission(thread_id, "halo")
+
+        halt.unlink()
+        assert await runtime.handle_mission(thread_id, "halo lagi") == "ok"
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_scheduled_tick_skips_resume_and_curiosity_while_halted(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
+        (tmp_path / "HALT").write_text("")
+        calls = []
+
+        async def worker(prompt, structured_model=None):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker, halt_dir=tmp_path)
+
+        await runtime.scheduled_tick()
+
+        assert calls == []
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Active"
+
+    asyncio.run(scenario())

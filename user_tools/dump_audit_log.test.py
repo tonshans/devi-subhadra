@@ -1,4 +1,4 @@
-"""dump_audit script tests: CSV export, table emptied, safe failures."""
+"""dump_audit_log script tests: CSV export, table emptied, safe failures."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from core.cognitive_ledger import CognitiveLedger
 
 _REPO = Path(__file__).resolve().parents[1]
-_SCRIPT = _REPO / "user_tools" / "dump_audit.py"
+_SCRIPT = _REPO / "user_tools" / "dump_audit_log.py"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:

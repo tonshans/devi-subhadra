@@ -2,9 +2,9 @@
 """Dump every row of `audit_logs` to CSV, then empty the table.
 
 Usage (run from the repository root, agent may stay up):
-    python user_tools/dump_audit.py --db ./data/devi_subhadra.db
-    python user_tools/dump_audit.py --db ./data/devi_subhadra.db --out audit.csv
-    python user_tools/dump_audit.py --dsn "$POSTGRES_DSN"
+    python user_tools/dump_audit_log.py --db ./data/devi_subhadra.db
+    python user_tools/dump_audit_log.py --db ./data/devi_subhadra.db --out audit.csv
+    python user_tools/dump_audit_log.py --dsn "$POSTGRES_DSN"
 
 Behavior:
     - Writes the CSV first; rows are deleted only when the file is on disk.

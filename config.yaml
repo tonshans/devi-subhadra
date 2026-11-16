@@ -12,6 +12,9 @@ monologue_every_cycles: 5
 curiosity_daily_limit: 3
 # One audit_logs row per agent step (prompt, CoT, response, cost).
 audit_enabled: true
+# Empty HALT or STOP file in this directory stops agent work until removed.
+# Falls back to paths.workspace_dir when the directory does not exist.
+halt_dir: "/mnt/workspace"
 
 budget:
   max_initiative_budget_usd: 2.50

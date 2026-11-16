@@ -153,6 +153,8 @@ def build_runtime(
         monologue_every_cycles=settings.monologue_every_cycles,
         curiosity_daily_limit=settings.curiosity_daily_limit,
         audit_enabled=settings.audit_enabled,
+        halt_dir=settings.halt_dir,
+        workspace_dir=settings.paths.workspace_dir,
         input_usd_per_million=settings.pricing.input_usd_per_million,
         output_usd_per_million=settings.pricing.output_usd_per_million,
         deliver_file=deliver_file,

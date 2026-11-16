@@ -96,6 +96,8 @@ class AppConfig(StrictConfig):
     curiosity_daily_limit: int = Field(default=3, ge=0)
     # Write one audit_logs row per agent step (prompt, CoT, response).
     audit_enabled: bool = True
+    # Any HALT or STOP file here stops agent work until it is removed.
+    halt_dir: str = Field(default="/mnt/workspace", min_length=1)
     budget: BudgetConfig
     rate_limits: RateLimitsConfig
     models: ModelsConfig

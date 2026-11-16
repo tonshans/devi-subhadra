@@ -203,3 +203,16 @@ def test_trace_command_prints_the_audit_trail(tmp_path):
         assert "usage: /trace" in await dispatch("/trace", ctx)
 
     asyncio.run(scenario())
+
+
+def test_status_reports_halt_disk_and_temperature(tmp_path):
+    async def scenario():
+        _, _, ctx = await _setup(tmp_path)
+
+        text = await dispatch("/status", ctx)
+
+        assert "halt: none" in text
+        assert "disk: " in text
+        assert "cpu temp: " in text
+
+    asyncio.run(scenario())
