@@ -84,6 +84,8 @@ ledger_threads = Table(
     Column("is_human_endorsed", Integer, nullable=False, default=0),
     Column("expected_output", Text, nullable=True),
     Column("created_at", String(32), nullable=False, default=utc_now_text),
+    Column("attempt_count", Integer, nullable=False, default=0),
+    Column("last_attempt_at", String(32), nullable=True),
     Column("is_backup", Boolean, nullable=False, default=False, server_default=false()),
     CheckConstraint(
         "status IN ('Active', 'Paused', 'Completed', 'Archived')",

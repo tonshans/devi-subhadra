@@ -16,7 +16,14 @@ from core.config_loader import load_config
 from core.config_loader import SecretNotFoundError
 from core.db.engine import DatabaseRuntime
 from core.runtime import Runtime
-from main import build_gateway, build_runtime, create_app, create_production_app
+from core.provider_pool import ProviderPool
+from main import (
+    build_gateway,
+    build_runtime,
+    build_worker,
+    create_app,
+    create_production_app,
+)
 
 
 def _app(tmp_path, **kwargs):
@@ -111,6 +118,23 @@ def test_build_runtime_skips_gemini_keys_without_secret(
     )
 
     assert runtime.provider.ready_count == 1
+
+
+def test_build_worker_wraps_openrouter_in_a_provider_pool(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    settings = load_config(Path(__file__).with_name("config.yaml"))
+    settings = settings.model_copy(
+        update={
+            "rate_limits": settings.rate_limits.model_copy(
+                update={"provider": "openrouter"}
+            )
+        }
+    )
+
+    worker = build_worker(settings, BudgetGovernor(1.00))
+
+    assert isinstance(worker, ProviderPool)
+    assert worker.status_lines()[0] == "provider: openrouter (1 keys)"
 
 
 def test_create_production_app_wires_gateway_and_runtime(tmp_path, monkeypatch):

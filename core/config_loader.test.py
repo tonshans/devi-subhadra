@@ -257,3 +257,19 @@ def test_sanitize_log_leaves_clean_text_untouched(tmp_path, monkeypatch):
 
     assert manager.sanitize_log("thread active") == "thread active"
     assert os.environ.get("GITHUB_TOKEN") is None  # no process-wide mutation
+
+def test_curiosity_daily_limit_defaults_to_three_and_accepts_zero(tmp_path):
+    assert load_config(_write_config(tmp_path, _valid_config())).curiosity_daily_limit == 3
+
+    data = _valid_config()
+    data["curiosity_daily_limit"] = 0
+
+    assert load_config(_write_config(tmp_path, data)).curiosity_daily_limit == 0
+
+
+def test_curiosity_daily_limit_rejects_negative(tmp_path):
+    data = _valid_config()
+    data["curiosity_daily_limit"] = -1
+
+    with pytest.raises(ConfigValidationError):
+        load_config(_write_config(tmp_path, data))

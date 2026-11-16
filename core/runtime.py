@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -27,11 +27,11 @@ from core.inner_monologue import InnerMonologue
 from core.memory_manager import MemoryManager
 from core.plugin_loader import PluginLoader, build_extra_tools_prompt
 from core.provider_pool import AllProvidersUnavailable
-from core.schemas import MissionReply, PluginOutputSchema
+from core.schemas import MissionReply, PluginOutputSchema, SupervisorDecision
 from core.supervisor import Supervisor
 from core.vector_store import VectorStore
 
-Worker = Callable[[str], Awaitable[str | MissionReply]]
+Worker = Callable[..., Awaitable[object]]
 Initiative = Callable[[], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,10 @@ _UNTIL_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 SLEEP_MODE_LAST_RUN_KEY = "sleep_mode_last_run"
 # Local hours when Sleep Mode may run its batch job (00:00-05:59).
 SLEEP_HOURS = frozenset(range(0, 6))
+MAX_THREAD_ATTEMPTS = 3
+RESUME_RETRY_SECONDS = 300
+# One mission may call at most this many tools before it must answer.
+MAX_TOOL_ROUNDS = 3
 
 
 def _parse_until(value: str | None) -> datetime | None:
@@ -100,6 +104,7 @@ class Runtime:
         monologue_every_cycles: int = 1,
         wake_up: Optional[Callable[[], bool]] = None,
         initiative: Optional[Initiative] = None,
+        curiosity_daily_limit: int = 3,
         deliver_file: Optional[Callable[[str], Awaitable[None]]] = None,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         supervisor_timeout_seconds: float = 300,
@@ -140,6 +145,7 @@ class Runtime:
         self._tick_count = 0
         self._wake_up = wake_up
         self._initiative = initiative or self._default_initiative
+        self._curiosity_limit = curiosity_daily_limit
         self._deliver_file = deliver_file
         self._notify = notify
 
@@ -149,7 +155,70 @@ class Runtime:
         return self._worker if hasattr(self._worker, "status_lines") else None
 
     async def _default_initiative(self) -> int:
-        return await self._memory.decay_memories()
+        decayed = await self._memory.decay_memories()
+        await self._curiosity_cycle()
+        return decayed
+
+    async def _curiosity_prompt(self) -> str:
+        directives = await self._ledger.list_core_directives()
+        vision = "; ".join(
+            row["content"] for row in directives if row["directive_type"] == "VISION"
+        )
+        queued = await self._ledger.get_next_active_thread()
+        busy = (
+            f"Queued mission: {queued['title']}"
+            if queued
+            else "No queued mission."
+        )
+        return (
+            "IDLE CYCLE. You are between tasks.\n"
+            f"VISION: {vision or 'not set'}\n"
+            f"{busy}\n"
+            "Choose CREATE_INITIATIVE with one concrete next step toward the "
+            "vision, or SLEEP_NOOP when nothing useful remains today."
+        )
+
+    async def _curiosity_cycle(self) -> None:
+        """One LLM thought per cycle, capped per UTC day, from the idle loop."""
+        if self._worker is None or self._curiosity_limit <= 0:
+            return
+        key = f"curiosity_count:{datetime.now(timezone.utc):%Y-%m-%d}"
+        used = int(await self._ledger.get_system_state(key) or 0)
+        if used >= self._curiosity_limit:
+            return
+        try:
+            # shortcut: needs a worker that accepts structured_model; a plain
+            # callable just logs and skips curiosity.
+            decision = await self._worker(
+                await self._curiosity_prompt(), structured_model=SupervisorDecision
+            )
+        except Exception:
+            logger.exception("curiosity cycle failed")
+            return
+        if not isinstance(decision, SupervisorDecision):
+            return
+
+        await self._ledger.set_system_state(key, str(used + 1))
+        thinking = decision.action_type == "CREATE_INITIATIVE"
+        thread_id = await self._ledger.create_thread(
+            f"Curiosity: {decision.thought_entry[:60]}",
+            "AGENT",
+            status="Active" if thinking else "Completed",
+        )
+        if thinking:
+            # Give the resume loop a concrete goal to work on.
+            await self._ledger.update(
+                "ledger_threads",
+                thread_id,
+                expected_output=decision.thought_entry,
+            )
+        await self._ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="PEMIKIRAN",
+            content=f"{decision.reasoning}\n{decision.thought_entry}",
+            token_count=self._compiler.estimate_tokens(decision.thought_entry),
+        )
 
     async def blocked(self) -> bool:
         return await self._ledger.get_system_state(KILL_SWITCH_KEY) == "1"
@@ -291,7 +360,11 @@ class Runtime:
             await self._ledger.register_plugin(name, "ATELIER", description)
 
     async def handle_mission(
-        self, thread_id: str, query: str, initiator: str = "Telegram"
+        self,
+        thread_id: str,
+        query: str,
+        initiator: str = "Telegram",
+        record_request: bool = True,
     ) -> str:
         await self.auto_resume()
         if await self.blocked():
@@ -308,6 +381,7 @@ class Runtime:
         if gate is not None:
             return gate
 
+        await self._ledger.record_thread_attempt(thread_id)
         pressure = self._governor.check_rate_limit() == WAITING_FOR_QUOTA
         context = await self._compiler.compile_context(
             thread_id,
@@ -315,6 +389,15 @@ class Runtime:
             pressure,
             extra_tools=await self._tool_catalog_prompt(),
         )
+        if record_request:
+            # Persist the request so a crashed mission can be resumed later.
+            await self._ledger.create(
+                "ledger_entries",
+                thread_id=thread_id,
+                tag="TINDAKAN",
+                content=query,
+                token_count=self._compiler.estimate_tokens(query),
+            )
 
         paid = thread["origin"] != "HUMAN"
         priced = self._input_rate > 0 or self._output_rate > 0
@@ -323,6 +406,16 @@ class Runtime:
             if paid and priced
             else self._cost
         )
+
+        usages: list[dict] = []
+        unavailable = False
+        prompt = context.prompt
+        reply = "Worker failed."
+        files: list[str] = []
+        worker_succeeded = False
+        tool_rounds = 0
+        cost = 0.0
+        outcome_status = "budget_exhausted"
 
         try:
             bucket = self._governor.authorize_call(
@@ -333,83 +426,128 @@ class Runtime:
         except BudgetExceededError:
             return "Budget exhausted; initiative paused."
 
-        usages: list[dict] = []
+        while True:
+            round_start = len(usages)
 
-        async def run_worker() -> PluginOutputSchema:
-            # Every attempt is one provider request, including healer retries.
-            try:
-                return PluginOutputSchema(
-                    success=True, data={"reply": await self._worker(context.prompt)}
-                )
-            except AllProvidersUnavailable as exc:
-                # One notice per down episode; the next attempt reports again.
-                if exc.should_notify:
-                    await self._notice(exc.message)
-                return PluginOutputSchema(
-                    success=True, data={"reply": exc.message}
-                )
-            finally:
-                usage = getattr(self._worker, "last_usage", None)
+            async def run_worker() -> PluginOutputSchema:
+                nonlocal unavailable
+                unavailable = False
+                # Every attempt is one provider request, including healer retries.
                 try:
-                    self._worker.last_usage = None
-                except AttributeError:
-                    pass
-                if usage:
-                    usages.append(usage)
-                tokens = (
-                    int(usage.get("prompt_tokens", 0))
-                    + int(usage.get("completion_tokens", 0))
-                    if usage
-                    else 0
-                )
-                self._governor.record_api_usage(1, tokens, side=side)
+                    return PluginOutputSchema(
+                        success=True, data={"reply": await self._worker(prompt)}
+                    )
+                except AllProvidersUnavailable as exc:
+                    unavailable = True
+                    # One notice per down episode; the next attempt reports again.
+                    if exc.should_notify:
+                        await self._notice(exc.message)
+                    return PluginOutputSchema(
+                        success=False,
+                        data={"reply": exc.message},
+                        error_message=exc.message,
+                    )
+                finally:
+                    usage = getattr(self._worker, "last_usage", None)
+                    try:
+                        self._worker.last_usage = None
+                    except AttributeError:
+                        pass
+                    if usage:
+                        usages.append(usage)
+                    tokens = (
+                        int(usage.get("prompt_tokens", 0))
+                        + int(usage.get("completion_tokens", 0))
+                        if usage
+                        else 0
+                    )
+                    self._governor.record_api_usage(1, tokens, side=side)
 
-        outcome = await self._supervisor.delegate_worker(
-            run_worker, self._propose_patch
-        )
-        if outcome.status == "completed":
-            result = outcome.result
-            raw_reply = (
-                result.data.get("reply", "")
-                if isinstance(result, PluginOutputSchema)
-                else result
+            outcome = await self._supervisor.delegate_worker(
+                run_worker, self._propose_patch
             )
-            if isinstance(raw_reply, MissionReply):
-                reply = raw_reply.reply
-                files = raw_reply.files
-            else:
-                reply = str(raw_reply)
+            outcome_status = outcome.status
+            raw_reply: object = ""
+            if outcome.status == "completed":
+                result = outcome.result
+                worker_succeeded = (
+                    result.success if isinstance(result, PluginOutputSchema) else True
+                )
+                raw_reply = (
+                    result.data.get("reply", "")
+                    if isinstance(result, PluginOutputSchema)
+                    else result
+                )
+                if isinstance(raw_reply, MissionReply):
+                    reply = raw_reply.reply
+                    files = raw_reply.files
+                else:
+                    reply = str(raw_reply)
+                    files = []
+            elif outcome.heal_result is not None:
+                worker_succeeded = outcome.heal_result.success
+                reply = outcome.heal_result.report
                 files = []
-        elif outcome.heal_result is not None:
-            reply = outcome.heal_result.report
-            files = []
-        else:
-            reply = "Worker failed."
-            files = []
-        reply = await self._deliver_files(reply, files)
-
-        prompt_tokens = sum(int(item.get("prompt_tokens", 0)) for item in usages)
-        completion_tokens = sum(
-            int(item.get("completion_tokens", 0)) for item in usages
-        )
-        cost = 0.0 if bucket == "HUMAN_EXEMPT" else self._cost
-        if paid and priced:
-            if usages:
-                cost = self._token_cost(prompt_tokens, completion_tokens)
-                self._governor.settle(bucket, reserved, cost)
             else:
-                cost = reserved
+                worker_succeeded = False
+                reply = "Worker failed."
+                files = []
+
+            cost += self._settle_round(
+                bucket,
+                reserved,
+                usages[round_start:],
+                unavailable=unavailable,
+                paid=paid,
+                priced=priced,
+            )
+
+            plugin = (
+                raw_reply.plugin if isinstance(raw_reply, MissionReply) else None
+            )
+            if (
+                not worker_succeeded
+                or not plugin
+                or tool_rounds >= MAX_TOOL_ROUNDS
+            ):
+                break
+            tool_rounds += 1
+            output = await self.run_plugin(plugin, raw_reply.plugin_payload or {})
+            prompt = (
+                f"{context.prompt}\n\n"
+                f"TOOL RESULT ({plugin}): {output.model_dump_json()[:4000]}\n"
+                "Answer the user now; do not request the same tool again."
+            )
+            try:
+                # Each extra round pays for one more provider request.
+                bucket = self._governor.authorize_call(
+                    reserved,
+                    origin=thread["origin"],
+                    is_human_endorsed=bool(thread["is_human_endorsed"]),
+                )
+            except BudgetExceededError:
+                reply = f"{reply}\nBudget exhausted; initiative paused."
+                break
+
+        reply = await self._deliver_files(reply, files)
 
         gate = await self._limit_gate(side)
         if gate is not None:
             reply = f"{reply}\n{gate}"
+
+        if worker_succeeded:
+            await self._ledger.set_thread_status(thread_id, "Completed")
 
         await self._ledger.create(
             "activity_logs",
             thread_id=thread_id,
             source="AGENT",
             initiator=initiator,
-            reasoning=f"Mission reply via {outcome.status}",
+            reasoning=(
+                f"Mission reply via {outcome_status}"
+                if worker_succeeded
+                else f"Mission failed via {outcome_status}"
+            ),
             budget_bucket=bucket,
             tokens_used=context.token_count,
             cost_usd=cost,
@@ -417,11 +555,39 @@ class Runtime:
         await self._ledger.create(
             "ledger_entries",
             thread_id=thread_id,
-            tag="FAKTA",
+            tag="FAKTA" if worker_succeeded else "TINDAKAN",
             content=reply,
             token_count=self._compiler.estimate_tokens(reply),
         )
         return reply
+
+    def _settle_round(
+        self,
+        bucket: str,
+        reserved: float,
+        usages: list[dict],
+        *,
+        unavailable: bool,
+        paid: bool,
+        priced: bool,
+    ) -> float:
+        """Settle one LLM round so each tool loop round is billed separately."""
+        if not paid:
+            return 0.0
+        if unavailable:
+            # No provider answered, so refund the reservation.
+            self._governor.settle(bucket, reserved, 0.0)
+            return 0.0
+        if not priced:
+            return self._cost
+        if not usages:
+            return reserved
+        cost = self._token_cost(
+            sum(int(item.get("prompt_tokens", 0)) for item in usages),
+            sum(int(item.get("completion_tokens", 0)) for item in usages),
+        )
+        self._governor.settle(bucket, reserved, cost)
+        return cost
 
     async def _deliver_files(self, reply: str, files: list[str]) -> str:
         for path in files:
@@ -485,6 +651,34 @@ class Runtime:
         finally:
             await self._ledger.set_system_state(SLEEP_MODE_LAST_RUN_KEY, today)
 
+    async def resume_next_active(self, now: datetime | None = None) -> str | None:
+        """Run one Active thread whose cooldown elapsed; crash/limit recovery."""
+        now = now or datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=RESUME_RETRY_SECONDS)).strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+        thread = await self._ledger.get_next_active_thread(ready_before=cutoff)
+        if thread is None:
+            return None
+        thread_id = str(thread["thread_id"])
+        if int(thread.get("attempt_count") or 0) >= MAX_THREAD_ATTEMPTS:
+            await self._ledger.set_thread_status(thread_id, "Completed")
+            await self._notice(
+                f"Mission dropped after {MAX_THREAD_ATTEMPTS} attempts: "
+                f"{thread['title']}"
+            )
+            return None
+
+        entries = await self._ledger.list_ledger_entries(
+            thread_id, limit=1, tags=("TINDAKAN",)
+        )
+        query = (
+            entries[-1]["content"]
+            if entries
+            else thread.get("expected_output") or f"Lanjutkan misi: {thread['title']}"
+        )
+        return await self.handle_mission(thread_id, query, record_request=False)
+
     async def scheduled_tick(self, now: datetime | None = None) -> Any:
         await self.auto_resume()
         if await self.blocked():
@@ -495,6 +689,7 @@ class Runtime:
             return None
         if self._wake_up is not None:
             self._wake_up()
+        await self.resume_next_active()
         await self.sleep_mode_tick(now)
         self._tick_count += 1
         if self._tick_count % self._monologue_every_cycles:

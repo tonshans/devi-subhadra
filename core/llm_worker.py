@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from core.schemas import MissionReply
 
@@ -13,9 +14,19 @@ DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 STRUCTURED_INSTRUCTION = (
     'Reply ONLY as JSON: {"reply": "<text for the user>", '
-    '"files": ["<local file path inside workspace or atelier>"]}. '
-    "Use an empty files list when no file should be sent."
+    '"files": ["<local file path inside workspace or atelier>"], '
+    '"plugin": "<tool name or null>", "plugin_payload": {}}. '
+    "Use an empty files list when no file should be sent. "
+    "Set plugin only when a listed tool is needed; the tool runs and you are "
+    "asked again for the final reply."
 )
+
+
+def _schema_instruction(model: type[BaseModel]) -> str:
+    return (
+        "Reply ONLY as JSON matching this schema: "
+        + json.dumps(model.model_json_schema())
+    )
 
 
 class OpenRouterWorker:
@@ -46,12 +57,20 @@ class OpenRouterWorker:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             return await client.post(self._endpoint, json=payload, headers=headers)
 
-    async def __call__(self, prompt: str) -> str | MissionReply:
+    async def __call__(
+        self, prompt: str, structured_model: Optional[type[BaseModel]] = None
+    ) -> str | BaseModel:
         self.last_usage = None
+        model = structured_model or (MissionReply if self._structured else None)
         messages = [{"role": "user", "content": prompt}]
         payload = {"model": self._model, "messages": messages}
-        if self._structured:
-            messages.insert(0, {"role": "system", "content": STRUCTURED_INSTRUCTION})
+        if model is not None:
+            instruction = (
+                STRUCTURED_INSTRUCTION
+                if model is MissionReply
+                else _schema_instruction(model)
+            )
+            messages.insert(0, {"role": "system", "content": instruction})
             payload["response_format"] = {"type": "json_object"}
         response = await self._post(payload)
         response.raise_for_status()
@@ -71,12 +90,12 @@ class OpenRouterWorker:
             if isinstance(usage, dict)
             else None
         )
-        if self._structured:
+        if model is not None:
             try:
-                return MissionReply.model_validate_json(content)
+                return model.model_validate_json(content)
             except ValidationError as exc:
                 raise RuntimeError(
-                    "OpenRouter response is not a valid MissionReply"
+                    f"OpenRouter response is not a valid {model.__name__}"
                 ) from exc
         return content
 
@@ -112,15 +131,21 @@ class GeminiWorker:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             return await client.post(self._url(), json=payload, headers=headers)
 
-    async def __call__(self, prompt: str) -> str | MissionReply:
+    async def __call__(
+        self, prompt: str, structured_model: Optional[type[BaseModel]] = None
+    ) -> str | BaseModel:
         self.last_usage = None
+        model = structured_model or (MissionReply if self._structured else None)
         payload: dict = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}]
         }
-        if self._structured:
-            payload["systemInstruction"] = {
-                "parts": [{"text": STRUCTURED_INSTRUCTION}]
-            }
+        if model is not None:
+            instruction = (
+                STRUCTURED_INSTRUCTION
+                if model is MissionReply
+                else _schema_instruction(model)
+            )
+            payload["systemInstruction"] = {"parts": [{"text": instruction}]}
             payload["generationConfig"] = {"responseMimeType": "application/json"}
         response = await self._post(payload)
         response.raise_for_status()
@@ -141,11 +166,11 @@ class GeminiWorker:
             if isinstance(usage, dict)
             else None
         )
-        if self._structured:
+        if model is not None:
             try:
-                return MissionReply.model_validate_json(content)
+                return model.model_validate_json(content)
             except ValidationError as exc:
                 raise RuntimeError(
-                    "Gemini response is not a valid MissionReply"
+                    f"Gemini response is not a valid {model.__name__}"
                 ) from exc
         return content

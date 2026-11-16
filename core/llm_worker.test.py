@@ -283,3 +283,53 @@ def test_gemini_worker_raises_on_http_error():
 
     asyncio.run(scenario())
 
+
+
+def test_worker_parses_a_per_call_structured_model():
+    from core.schemas import SupervisorDecision
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"action_type": "SLEEP_NOOP", '
+                                '"model_tier_used": "TIER_1_LIGHT", '
+                                '"reasoning": "nothing to do", '
+                                '"thought_entry": "no useful work left"}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    async def scenario():
+        async with _client(handler) as client:
+            worker = OpenRouterWorker("api-key", "model/x", client=client)
+            return await worker("idle", structured_model=SupervisorDecision)
+
+    decision = asyncio.run(scenario())
+
+    assert decision.action_type == "SLEEP_NOOP"
+
+
+def test_worker_rejects_content_outside_the_per_call_model():
+    from core.schemas import SupervisorDecision
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"reply": "hi"}'}}]},
+        )
+
+    async def scenario():
+        async with _client(handler) as client:
+            worker = OpenRouterWorker("api-key", "model/x", client=client)
+            with pytest.raises(RuntimeError, match="SupervisorDecision"):
+                await worker("idle", structured_model=SupervisorDecision)
+
+    asyncio.run(scenario())

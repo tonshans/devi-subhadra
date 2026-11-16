@@ -60,3 +60,6 @@ class DiscoveryRecord(StrictBaseModel):
 class MissionReply(StrictBaseModel):
     reply: str = Field(..., min_length=1)
     files: List[str] = Field(default_factory=list, max_length=5)
+    # Tool request: the runtime runs the plugin, then asks the model again.
+    plugin: Optional[str] = None
+    plugin_payload: Optional[Dict[str, Any]] = None

@@ -16,9 +16,11 @@ from core.provider_pool import (
 _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
 
-def _status_error(status: int, headers: dict | None = None):
+def _status_error(status: int, headers: dict | None = None, json=None):
     request = httpx.Request("POST", "https://example.test/generate")
-    response = httpx.Response(status, request=request, headers=headers or {})
+    response = httpx.Response(
+        status, request=request, headers=headers or {}, json=json
+    )
     return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
@@ -39,7 +41,7 @@ class _FakeWorker:
         return self.outcome
 
 
-def _pool(tmp_path, outcomes, *, clock=None, **key_limits):
+def _pool(tmp_path, outcomes, *, clock=None, provider="gemini", **key_limits):
     now = clock if clock is not None else [_NOW]
     governor = BudgetGovernor(1.00, clock=lambda: now[0])
     keys = []
@@ -48,7 +50,9 @@ def _pool(tmp_path, outcomes, *, clock=None, **key_limits):
         outcome, usage = value if isinstance(value, tuple) else (value, None)
         keys.append(ProviderKey(id=key_id, secret=f"secret-{key_id}", **key_limits))
         workers[key_id] = _FakeWorker(outcome, usage)
-    pool = ProviderPool(keys, lambda key: workers[key.id], governor)
+    pool = ProviderPool(
+        keys, lambda key: workers[key.id], governor, provider=provider
+    )
     return pool, workers, governor, now
 
 
@@ -94,6 +98,51 @@ def test_retry_after_header_sets_the_cooldown(tmp_path):
     assert workers["primary"].calls == 1
 
     now[0] = _NOW + timedelta(seconds=6)
+    asyncio.run(pool("halo"))
+    assert workers["primary"].calls == 2
+
+
+def test_http_date_retry_after_sets_the_cooldown(tmp_path):
+    error = _status_error(429, headers={"retry-after": "Thu, 01 Jan 2026 12:00:30 GMT"})
+    pool, workers, _, now = _pool(
+        tmp_path, {"primary": error, "secondary": "jawaban"}
+    )
+
+    asyncio.run(pool("halo"))
+    now[0] = _NOW + timedelta(seconds=20)
+    asyncio.run(pool("halo"))
+    assert workers["primary"].calls == 1
+
+    now[0] = _NOW + timedelta(seconds=31)
+    asyncio.run(pool("halo"))
+    assert workers["primary"].calls == 2
+
+
+def test_gemini_body_retry_delay_sets_the_cooldown(tmp_path):
+    error = _status_error(
+        429,
+        json={
+            "error": {
+                "code": 429,
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "45s",
+                    }
+                ],
+            }
+        },
+    )
+    pool, workers, _, now = _pool(
+        tmp_path, {"primary": error, "secondary": "jawaban"}
+    )
+
+    asyncio.run(pool("halo"))
+    now[0] = _NOW + timedelta(seconds=40)
+    asyncio.run(pool("halo"))
+    assert workers["primary"].calls == 1
+
+    now[0] = _NOW + timedelta(seconds=46)
     asyncio.run(pool("halo"))
     assert workers["primary"].calls == 2
 
@@ -169,6 +218,19 @@ def test_all_down_notifies_once_per_episode(tmp_path):
     assert "Retrying automatically after" in first.value.message
 
 
+def test_all_down_names_the_configured_provider(tmp_path):
+    pool, _, _, _ = _pool(
+        tmp_path,
+        {"only": _status_error(429)},
+        provider="openrouter",
+    )
+
+    with pytest.raises(AllProvidersUnavailable) as error:
+        asyncio.run(pool("halo"))
+
+    assert error.value.message.startswith("All openrouter API keys are unavailable")
+
+
 def test_success_resets_the_down_episode(tmp_path):
     now = [_NOW]
     governor = BudgetGovernor(1.00, clock=lambda: now[0])
@@ -224,3 +286,24 @@ def test_status_lines_show_id_and_usage(tmp_path):
 def test_pool_requires_at_least_one_key():
     with pytest.raises(ValueError):
         ProviderPool([], lambda key: None, BudgetGovernor(1.00))
+
+
+def test_pool_forwards_per_call_kwargs_to_the_worker():
+    async def scenario():
+        seen = []
+
+        async def worker(prompt, structured_model=None):
+            seen.append((prompt, structured_model))
+            return "ok"
+
+        governor = BudgetGovernor(1.00, clock=lambda: _NOW)
+        pool = ProviderPool(
+            [ProviderKey(id="primary", secret="secret")],
+            lambda _key: worker,
+            governor,
+        )
+
+        assert await pool("halo", structured_model="Decision") == "ok"
+        assert seen == [("halo", "Decision")]
+
+    asyncio.run(scenario())

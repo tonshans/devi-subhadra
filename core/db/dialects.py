@@ -96,7 +96,11 @@ def create_search_objects_sync(connection) -> None:
 _COLUMN_BACKFILL = {
     "core_directives": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
     "semantic_memory": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
-    "ledger_threads": {"is_backup": "BOOLEAN NOT NULL DEFAULT 0"},
+    "ledger_threads": {
+        "is_backup": "BOOLEAN NOT NULL DEFAULT 0",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "last_attempt_at": "TEXT",
+    },
     "ledger_entries": {
         "is_backup": "BOOLEAN NOT NULL DEFAULT 0",
         "is_vectorized": "BOOLEAN NOT NULL DEFAULT 0",

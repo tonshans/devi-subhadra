@@ -92,6 +92,8 @@ class AppConfig(StrictConfig):
     fallback_sqlite_path: str = Field(default="./data/devi_subhadra.db", min_length=1)
     # Run one InnerMonologue initiative every N scheduler ticks (60s each).
     monologue_every_cycles: int = Field(default=1, ge=1)
+    # LLM-driven curiosity cycles per day; 0 disables proactive thinking.
+    curiosity_daily_limit: int = Field(default=3, ge=0)
     budget: BudgetConfig
     rate_limits: RateLimitsConfig
     models: ModelsConfig

@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -80,6 +80,29 @@ def test_all_providers_down_notifies_once_and_replies(tmp_path):
         assert notices == ["All Gemini API keys are unavailable."]
         entries = await ledger.list_ledger_entries(thread_id)
         assert entries[-1]["content"] == "All Gemini API keys are unavailable."
+        assert entries[-1]["tag"] == "TINDAKAN"
+        logs = await ledger.list_activity_logs()
+        assert {log["reasoning"] for log in logs} == {"Mission failed via completed"}
+
+    asyncio.run(scenario())
+
+
+def test_all_providers_down_refunds_the_agent_reservation(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Initiative", "AGENT")
+
+        async def worker(prompt):
+            raise AllProvidersUnavailable("Semua key down.", should_notify=False)
+
+        runtime = Runtime(ledger, governor, worker=worker, cost_usd=0.20)
+
+        reply = await runtime.handle_mission(thread_id, "belajar")
+
+        assert reply == "Semua key down."
+        assert governor.remaining_usd("ATELIER_30") == pytest.approx(0.30)
+        logs = await ledger.list_activity_logs()
+        assert logs[0]["cost_usd"] == pytest.approx(0.0)
 
     asyncio.run(scenario())
 
@@ -592,7 +615,10 @@ def test_global_limit_pauses_everything_and_explains(tmp_path):
         reply = await runtime.handle_mission(thread_id, "halo")
         assert "Agent paused: RPM limit 1/1 reached." in reply
         assert await ledger.get_system_state("kill_switch") == "1"
-        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Paused"
+        # The pause fires before the status settles, but the work did finish.
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
 
         with pytest.raises(MissionBlockedError):
             await runtime.handle_mission(thread_id, "halo lagi")
@@ -627,7 +653,9 @@ def test_agent_share_pauses_only_agent_threads(tmp_path):
 
         assert human_reply == "ok"
         assert len(calls) == 1
-        assert (await ledger.read("ledger_threads", human_thread))["status"] == "Active"
+        assert (
+            await ledger.read("ledger_threads", human_thread)
+        )["status"] == "Completed"
 
     asyncio.run(scenario())
 
@@ -650,7 +678,9 @@ def test_auto_resume_lifts_rate_limit_pause_after_its_window(tmp_path):
 
         assert reply == "ok"
         assert await ledger.get_system_state("kill_switch") == "0"
-        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Active"
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
 
     asyncio.run(scenario())
 
@@ -747,3 +777,300 @@ def test_sleep_mode_failure_is_logged_and_not_retried_same_night(tmp_path, caplo
 
     asyncio.run(scenario())
     assert "sleep-mode vectorization failed" in caplog.text
+
+
+def test_resume_next_active_reruns_a_crashed_mission(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="TINDAKAN",
+            content="kerjakan ini",
+            token_count=2,
+        )
+        prompts = []
+
+        async def worker(prompt):
+            prompts.append(prompt)
+            return "lanjut selesai"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        reply = await runtime.resume_next_active()
+
+        assert reply == "lanjut selesai"
+        assert "USER QUERY:\nkerjakan ini" in prompts[0]
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
+
+    asyncio.run(scenario())
+
+
+def test_resume_next_active_respects_the_retry_cooldown(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        await ledger.create_thread("Just tried", "HUMAN")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        assert await runtime.resume_next_active() == "ok"
+        # The attempt just happened, so the next tick must not rerun it.
+        assert await runtime.resume_next_active() is None
+        assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_resume_next_active_drops_a_thread_after_max_attempts(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Hopeless", "HUMAN")
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            attempt_count=3,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
+        notices = []
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(
+            ledger, governor, worker=worker, notify=notices.append
+        )
+
+        assert await runtime.resume_next_active() is None
+        assert calls == []
+        assert notices == ["Mission dropped after 3 attempts: Hopeless"]
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
+
+    asyncio.run(scenario())
+
+
+def test_scheduled_tick_does_not_resume_while_kill_switch_is_on(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.set_system_state("kill_switch", "1")
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime.scheduled_tick()
+
+        assert calls == []
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Active"
+
+    asyncio.run(scenario())
+
+
+def _decision(action="CREATE_INITIATIVE", **overrides):
+    from core.schemas import SupervisorDecision
+
+    data = {
+        "action_type": action,
+        "model_tier_used": "TIER_1_LIGHT",
+        "reasoning": "vision says keep learning",
+        "thought_entry": "explore async sqlite tuning",
+    }
+    data.update(overrides)
+    return SupervisorDecision(**data)
+
+
+def test_curiosity_cycle_creates_an_agent_thread_and_thought(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        await ledger.create(
+            "core_directives", directive_type="VISION", content="Stay curious."
+        )
+        prompts = []
+
+        async def worker(prompt, structured_model=None):
+            prompts.append((prompt, structured_model))
+            return _decision()
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime._default_initiative()
+
+        assert len(prompts) == 1
+        assert "Stay curious." in prompts[0][0]
+        assert prompts[0][1].__name__ == "SupervisorDecision"
+
+        active = await ledger.get_next_active_thread(origin="AGENT")
+        assert active["title"].startswith("Curiosity: ")
+        entries = await ledger.list_ledger_entries(active["thread_id"], tags=("PEMIKIRAN",))
+        assert "explore async sqlite tuning" in entries[-1]["content"]
+        assert await ledger.get_system_state(
+            f"curiosity_count:{datetime.now(timezone.utc):%Y-%m-%d}"
+        ) == "1"
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_cycle_stops_at_the_daily_limit(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        await ledger.set_system_state(
+            f"curiosity_count:{datetime.now(timezone.utc):%Y-%m-%d}", "3"
+        )
+        calls = []
+
+        async def worker(prompt, structured_model=None):
+            calls.append(prompt)
+            return _decision()
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime._default_initiative()
+
+        assert calls == []
+        assert await ledger.get_next_active_thread(origin="AGENT") is None
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_cycle_marks_sleep_noop_threads_completed(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        async def worker(prompt, structured_model=None):
+            return _decision("SLEEP_NOOP")
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime._default_initiative()
+
+        assert await ledger.get_next_active_thread(origin="AGENT") is None
+        logs = await ledger.list_activity_logs()
+        assert logs == []
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_failure_does_not_break_the_tick(tmp_path, caplog):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        async def worker(prompt):
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        await runtime._default_initiative()
+
+    asyncio.run(scenario())
+    assert "curiosity cycle failed" in caplog.text
+
+
+class _EchoPlugin:
+    def __init__(self):
+        self.payloads = []
+
+    def execute(self, payload):
+        self.payloads.append(payload)
+        return PluginOutputSchema(success=True, data={"echo": payload.get("text", "")})
+
+
+def test_mission_runs_a_requested_plugin_and_feeds_the_result_back(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        plugin = _EchoPlugin()
+        prompts = []
+
+        async def worker(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return MissionReply(
+                    reply="mencari",
+                    plugin="echo",
+                    plugin_payload={"text": "halo dunia"},
+                )
+            return MissionReply(reply="hasil akhir")
+
+        runtime = Runtime(
+            ledger, governor, plugins={"echo": plugin}, worker=worker
+        )
+
+        reply = await runtime.handle_mission(thread_id, "pakai tool")
+
+        assert reply == "hasil akhir"
+        assert plugin.payloads == [{"text": "halo dunia"}]
+        assert "TOOL RESULT (echo)" in prompts[1]
+        assert "halo dunia" in prompts[1]
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
+
+    asyncio.run(scenario())
+
+
+def test_mission_stops_after_the_tool_round_cap(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        plugin = _EchoPlugin()
+        calls = []
+
+        async def worker(prompt):
+            calls.append(prompt)
+            return MissionReply(
+                reply="masih mencari",
+                plugin="echo",
+                plugin_payload={"text": "lagi"},
+            )
+
+        runtime = Runtime(
+            ledger, governor, plugins={"echo": plugin}, worker=worker
+        )
+
+        reply = await runtime.handle_mission(thread_id, "loop")
+
+        assert reply == "masih mencari"
+        assert len(plugin.payloads) == 3
+        assert len(calls) == 4
+
+    asyncio.run(scenario())
+
+
+def test_failed_plugin_result_is_still_shown_to_the_model(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        prompts = []
+
+        async def worker(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return MissionReply(reply="coba", plugin="missing")
+            return MissionReply(reply="tool tidak ada, lanjut manual")
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        reply = await runtime.handle_mission(thread_id, "pakai tool")
+
+        assert reply == "tool tidak ada, lanjut manual"
+        assert "TOOL RESULT (missing)" in prompts[1]
+        assert "Unknown plugin" in prompts[1]
+
+    asyncio.run(scenario())

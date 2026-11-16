@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable
 
 import httpx
@@ -13,6 +15,7 @@ from core.budget_governor import BudgetGovernor
 COOLDOWN_SECONDS = 60
 DISABLED_STATUSES = {401, 403}
 RATE_LIMIT_STATUS = 429
+_DELAY = re.compile(r"^(\d+(?:\.\d+)?)s?$")
 PER_KEY_METRICS = (
     ("rpm", "rpm_limit"),
     ("tpm", "tpm_limit"),
@@ -20,7 +23,7 @@ PER_KEY_METRICS = (
     ("tpd", "tpd_limit"),
 )
 
-WorkerFactory = Callable[["ProviderKey"], Callable[[str], Awaitable[object]]]
+WorkerFactory = Callable[["ProviderKey"], Callable[..., Awaitable[object]]]
 
 
 class AllProvidersUnavailable(RuntimeError):
@@ -62,6 +65,31 @@ def _tokens(usage: dict | None) -> int:
     return int(usage.get("prompt_tokens", 0)) + int(
         usage.get("completion_tokens", 0)
     )
+
+
+def _delay_seconds(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    match = _DELAY.fullmatch(value.strip())
+    return float(match.group(1)) if match else None
+
+
+def _body_delay(response: httpx.Response) -> float | None:
+    """Gemini reports throttling in the body, not the headers."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return None
+    for item in details:
+        if isinstance(item, dict):
+            delay = _delay_seconds(item.get("retryDelay"))
+            if delay is not None:
+                return delay
+    return None
 
 
 class ProviderPool:
@@ -122,15 +150,26 @@ class ProviderPool:
         self._governor.record_key_usage(key.id, 1, _tokens(usage))
 
     def _retry_after(self, response: httpx.Response) -> datetime | None:
+        now = self._governor.now()
         value = response.headers.get("retry-after")
-        if not value:
+        if value:
+            seconds = _delay_seconds(value)
+            if seconds is not None:
+                return now + timedelta(seconds=seconds)
+            try:
+                moment = parsedate_to_datetime(value)
+            except (TypeError, ValueError):
+                moment = None
+            if moment is not None:
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=timezone.utc)
+                return max(now, moment)
+        seconds = _body_delay(response)
+        if seconds is None:
             return None
-        try:
-            return self._governor.now() + timedelta(seconds=float(value))
-        except ValueError:
-            return None
+        return now + timedelta(seconds=seconds)
 
-    async def __call__(self, prompt: str):
+    async def __call__(self, prompt: str, **kwargs):
         self.last_usage = None
         now = self._governor.now()
         reasons: list[str] = []
@@ -145,7 +184,7 @@ class ProviderPool:
 
             worker = self._workers[key.id]
             try:
-                reply = await worker(prompt)
+                reply = await worker(prompt, **kwargs)
             except httpx.HTTPStatusError as exc:
                 usage = self._consume_usage(worker)
                 self._record(key, usage)
@@ -188,7 +227,7 @@ class ProviderPool:
         should_notify = not self._down_notified
         self._down_notified = True
         detail = "; ".join(reasons) or "no usable keys"
-        message = f"All Gemini API keys are unavailable: {detail}"
+        message = f"All {self._provider} API keys are unavailable: {detail}"
         if resume_at is not None:
             message += f". Retrying automatically after {_text(resume_at)}."
         else:

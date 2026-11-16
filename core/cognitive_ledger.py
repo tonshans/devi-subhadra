@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, event, func, select, text, update
+from sqlalchemy import delete, event, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -70,6 +70,8 @@ _TABLES = {
             "is_human_endorsed",
             "expected_output",
             "created_at",
+            "attempt_count",
+            "last_attempt_at",
         },
     ),
     "ledger_entries": (
@@ -121,6 +123,7 @@ _TABLES = {
 }
 
 KILL_SWITCH_KEY = "kill_switch"
+RESUME_CUTOVER_KEY = "resume_cutover_v1"
 PAUSE_REASON_KEY = "pause_reason"
 PAUSE_UNTIL_KEY = "pause_until"
 AGENT_PAUSE_REASON_KEY = "agent_pause_reason"
@@ -199,6 +202,30 @@ class CognitiveLedger:
             await connection.run_sync(metadata.create_all)
             await ensure_sqlite_columns(connection)
             await create_search_objects(connection)
+            await self._apply_resume_cutover(connection)
+
+    async def _apply_resume_cutover(self, connection) -> None:
+        """Legacy Active threads were never resumable; close them once."""
+        state = self._table("system_state")
+        seen = await connection.execute(
+            select(state.c.value).where(state.c.key == RESUME_CUTOVER_KEY)
+        )
+        if seen.scalar() is not None:
+            return
+        await connection.execute(
+            update(self._table("ledger_threads"))
+            .where(self._table("ledger_threads").c.status == "Active")
+            .values(status="Completed", is_backup=False)
+        )
+        await connection.execute(
+            self._insert("system_state").values(
+                key=RESUME_CUTOVER_KEY,
+                value=utc_now_text(),
+                updated_at=utc_now_text(),
+                # Local bookkeeping only: never export it as new snapshot data.
+                is_backup=True,
+            )
+        )
 
     async def dispose(self) -> None:
         await self._engine.dispose()
@@ -289,21 +316,55 @@ class CognitiveLedger:
             priority_score=priority_score,
         )
 
-    async def get_next_active_thread(self) -> dict | None:
+    async def get_next_active_thread(
+        self, origin: str | None = None, ready_before: str | None = None
+    ) -> dict | None:
         table = self._table("ledger_threads")
-        async with self._engine.connect() as connection:
-            row = await connection.execute(
-                select(table)
-                .where(table.c.status == "Active")
-                .order_by(
-                    table.c.priority_score.desc(),
-                    table.c.created_at.asc(),
-                    table.c.thread_id.asc(),
+        statement = select(table).where(table.c.status == "Active")
+        if origin is not None:
+            statement = statement.where(table.c.origin == origin)
+        if ready_before is not None:
+            statement = statement.where(
+                or_(
+                    table.c.last_attempt_at.is_(None),
+                    table.c.last_attempt_at <= ready_before,
                 )
-                .limit(1)
             )
+        statement = statement.order_by(
+            table.c.priority_score.desc(),
+            table.c.created_at.asc(),
+            table.c.thread_id.asc(),
+        ).limit(1)
+        async with self._engine.connect() as connection:
+            row = await connection.execute(statement)
             found = row.mappings().first()
             return dict(found) if found else None
+
+    async def record_thread_attempt(self, thread_id: str) -> bool:
+        table = self._table("ledger_threads")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.thread_id == thread_id)
+                .values(
+                    attempt_count=table.c.attempt_count + 1,
+                    last_attempt_at=utc_now_text(),
+                    is_backup=False,
+                )
+            )
+            return result.rowcount > 0
+
+    async def set_thread_status(self, thread_id: str, status: str) -> bool:
+        if status not in {"Active", "Paused", "Completed", "Archived"}:
+            raise ValueError(f"invalid thread status: {status}")
+        table = self._table("ledger_threads")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.thread_id == thread_id)
+                .values(status=status, is_backup=False)
+            )
+            return result.rowcount > 0
 
     async def endorse_thread(
         self,

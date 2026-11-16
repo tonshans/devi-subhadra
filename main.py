@@ -75,10 +75,15 @@ def build_worker(
     """Configured LLM worker: a Gemini key pool, or one OpenRouter key."""
     secrets = SecretsManager()
     if settings.rate_limits.provider != "gemini":
-        return OpenRouterWorker(
-            secrets.get_secret("OPENROUTER_API_KEY"),
-            settings.models.tier_2_heavy,
-            structured=True,
+        secret = secrets.get_secret("OPENROUTER_API_KEY")
+        key = ProviderKey(id="openrouter", secret=secret)
+        return ProviderPool(
+            [key],
+            lambda _: OpenRouterWorker(
+                secret, settings.models.tier_2_heavy, structured=True
+            ),
+            governor,
+            provider="openrouter",
         )
     keys: list[ProviderKey] = []
     for key in settings.gemini_keys:
@@ -146,6 +151,7 @@ def build_runtime(
         propose_patch=propose_patch,
         wake_up=gateway.wake_up_ping,
         monologue_every_cycles=settings.monologue_every_cycles,
+        curiosity_daily_limit=settings.curiosity_daily_limit,
         input_usd_per_million=settings.pricing.input_usd_per_million,
         output_usd_per_million=settings.pricing.output_usd_per_million,
         deliver_file=deliver_file,

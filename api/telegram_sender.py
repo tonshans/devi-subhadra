@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 
@@ -11,6 +12,26 @@ from api.telegram_gateway import MAX_CHUNK_CHARS
 
 DEFAULT_API_BASE = "https://api.telegram.org"
 UPLOAD_TIMEOUT = 120
+MAX_RETRY_WAIT = 30
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    params = body.get("parameters") if isinstance(body, dict) else None
+    value = params.get("retry_after") if isinstance(params, dict) else None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 class TelegramSender:
@@ -20,11 +41,13 @@ class TelegramSender:
         client: Optional[httpx.AsyncClient] = None,
         api_base: str = DEFAULT_API_BASE,
         timeout: float = 15,
+        sleep: Optional[Callable[[float], Awaitable[None]]] = None,
     ) -> None:
         self._token = token
         self._client = client
         self._api_base = api_base.rstrip("/")
         self._timeout = timeout
+        self._sleep = sleep or asyncio.sleep
 
     async def _post(self, url: str, payload: dict) -> httpx.Response:
         if self._client is not None:
@@ -43,6 +66,13 @@ class TelegramSender:
                 f"{self._api_base}/bot{self._token}/sendMessage",
                 {"chat_id": chat_id, "text": message},
             )
+            if response.status_code == 429:
+                delay = _retry_after_seconds(response) or 1.0
+                await self._sleep(min(delay, MAX_RETRY_WAIT))
+                response = await self._post(
+                    f"{self._api_base}/bot{self._token}/sendMessage",
+                    {"chat_id": chat_id, "text": message},
+                )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(f"Telegram API HTTP {exc.response.status_code}") from None

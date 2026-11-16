@@ -68,6 +68,57 @@ def test_raises_on_http_error_without_leaking_token():
     asyncio.run(scenario())
 
 
+def test_retries_once_on_429_with_telegram_retry_after():
+    responses = [
+        httpx.Response(
+            429,
+            json={"ok": False, "parameters": {"retry_after": 7}},
+        ),
+        httpx.Response(200, json={"ok": True, "result": {"message_id": 1}}),
+    ]
+    delays = []
+
+    def handler(request):
+        return responses.pop(0)
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("token", client=client, sleep=fake_sleep)
+            await sender(42, "hello")
+
+    asyncio.run(scenario())
+
+    assert delays == [7.0]
+    assert responses == []
+
+
+def test_second_429_is_capped_and_raised():
+    responses = [
+        httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}}),
+        httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}}),
+    ]
+    delays = []
+
+    def handler(request):
+        return responses.pop(0)
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("token", client=client, sleep=fake_sleep)
+            with pytest.raises(RuntimeError, match="HTTP 429"):
+                await sender(42, "hello")
+
+    asyncio.run(scenario())
+
+    assert delays == [30.0]
+
+
 def test_send_document_posts_multipart(tmp_path):
     seen = []
     document = tmp_path / "laporan.txt"

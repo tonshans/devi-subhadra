@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from sqlalchemy import text
 
 from core.cognitive_ledger import CognitiveLedger
 
@@ -710,5 +711,65 @@ def test_list_stale_plugins_returns_only_old_active_atelier_rows(tmp_path):
         rows = await ledger.list_stale_plugins("2026-10-17 00:00:00")
 
         assert [row["plugin_name"] for row in rows] == ["stale"]
+
+    asyncio.run(scenario())
+
+
+def test_record_thread_attempt_and_status_transitions(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+
+        assert await ledger.record_thread_attempt(thread_id) is True
+        row = await ledger.read("ledger_threads", thread_id)
+        assert row["attempt_count"] == 1
+        assert row["last_attempt_at"] is not None
+
+        assert await ledger.set_thread_status(thread_id, "Completed") is True
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Completed"
+        with pytest.raises(ValueError):
+            await ledger.set_thread_status(thread_id, "Bogus")
+
+    asyncio.run(scenario())
+
+
+def test_get_next_active_thread_skips_threads_still_in_cooldown(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Cooling down", "HUMAN")
+        await ledger.record_thread_attempt(thread_id)
+
+        assert (
+            await ledger.get_next_active_thread(ready_before="2000-01-01 00:00:00.000000")
+            is None
+        )
+        assert await ledger.get_next_active_thread(origin="AGENT") is None
+        assert (
+            await ledger.get_next_active_thread(ready_before=None)
+        )["thread_id"] == thread_id
+
+    asyncio.run(scenario())
+
+
+def test_initialize_closes_legacy_active_threads_once(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Legacy", "HUMAN")
+        # Pretend the cutover marker is missing: a pre-upgrade database.
+        async with ledger._engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM system_state WHERE key = 'resume_cutover_v1'")
+            )
+
+        await ledger.initialize()
+
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
+        reopened = await ledger.create_thread("New", "HUMAN")
+        await ledger.initialize()
+        assert (
+            await ledger.read("ledger_threads", reopened)
+        )["status"] == "Active"
 
     asyncio.run(scenario())
