@@ -11,7 +11,7 @@ from core.budget_governor import BudgetGovernor
 from core.cognitive_ledger import CognitiveLedger
 from core.provider_pool import AllProvidersUnavailable
 from core.runtime import MissionBlockedError, Runtime, load_plugins, scheduler_loop
-from core.schemas import MissionReply, PluginOutputSchema
+from core.schemas import HealerPatchProposal, MissionReply, PluginOutputSchema
 
 
 async def _setup(tmp_path):
@@ -1319,5 +1319,109 @@ def test_scheduled_tick_skips_resume_and_curiosity_while_halted(tmp_path):
 
         assert calls == []
         assert (await ledger.read("ledger_threads", thread_id))["status"] == "Active"
+
+    asyncio.run(scenario())
+
+
+def test_run_plugin_heals_sandbox_assertion_failures(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        class Sandbox:
+            def __init__(self):
+                self.codes = []
+
+            def execute(self, payload):
+                self.codes.append(payload["code"])
+                passed = payload["code"] == "fixed"
+                return PluginOutputSchema(
+                    success=passed,
+                    data={"code": payload["code"]},
+                    error_message=None if passed else "assertion failed",
+                    assertions_passed=passed,
+                )
+
+        sandbox = Sandbox()
+
+        async def propose_patch(attempt, error):
+            return HealerPatchProposal(
+                attempt_number=attempt,
+                root_cause_analysis="The sandboxed snippet used the wrong guard.",
+                patched_code="fixed",
+                embedded_assertions=["True"],
+            )
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins={"sandbox_executor": sandbox},
+            propose_patch=propose_patch,
+            worker=None,
+        )
+
+        output = await runtime.run_plugin(
+            "sandbox_executor", {"code": "broken", "language": "python"}
+        )
+
+        assert output.success is True
+        assert output.assertions_passed is True
+        assert sandbox.codes == ["broken", "fixed"]
+
+    asyncio.run(scenario())
+
+
+def test_default_propose_patch_falls_back_to_the_worker(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+
+        async def worker(prompt, structured_model=None):
+            assert structured_model is HealerPatchProposal
+            return HealerPatchProposal(
+                attempt_number=1,
+                root_cause_analysis="Worker diagnosed the failure.",
+                patched_code="print('ok')",
+                embedded_assertions=["True"],
+            )
+
+        runtime = Runtime(ledger, governor, worker=worker)
+
+        proposal = await runtime._default_propose_patch(1, "worker boom")
+
+        assert isinstance(proposal, HealerPatchProposal)
+        assert proposal.patched_code == "print('ok')"
+
+    asyncio.run(scenario())
+
+
+def test_sleep_mode_decays_semantic_memories(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        decayed = []
+
+        class FakeMemory:
+            async def decay_plugins(self, now=None):
+                return 0
+
+            async def decay_memories(self, now=None):
+                decayed.append(now)
+                return 1
+
+            async def vectorize_pending(self, now=None):
+                return "report"
+
+        async def initiative():
+            return 0
+
+        runtime = Runtime(
+            ledger,
+            governor,
+            worker=None,
+            memory=FakeMemory(),
+            initiative=initiative,
+        )
+        night = datetime(2026, 11, 16, 2, 0)
+
+        assert await runtime.sleep_mode_tick(night) == "report"
+        assert decayed == [night]
 
     asyncio.run(scenario())

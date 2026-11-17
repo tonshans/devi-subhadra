@@ -13,7 +13,17 @@ import os
 import shutil
 from pathlib import Path
 
-from sqlalchemy import and_, create_engine, delete, insert, inspect, select, text, update
+from sqlalchemy import (
+    and_,
+    bindparam,
+    create_engine,
+    delete,
+    insert,
+    inspect,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -77,23 +87,67 @@ async def _mark_backed_up(
     async with engine.begin() as connection:
         for name, rows in rows_by_table.items():
             table = metadata.tables[name]
-            primary_keys = {column.name for column in table.primary_key.columns}
-            for row in rows:
-                # shortcut: one guarded UPDATE per row; batch later if dirty sets grow.
-                conditions = [
-                    table.c[column] == row[column] for column in primary_keys
-                ]
-                conditions.append(table.c.is_backup.is_(False))
-                conditions.extend(
-                    column == row[column.name]
-                    for column in table.columns
-                    if column.name not in primary_keys and column.name != "is_backup"
+            primary_keys = [column.name for column in table.primary_key.columns]
+            checked = [
+                column.name
+                for column in table.columns
+                if column.name not in primary_keys and column.name != "is_backup"
+            ]
+            statement = (
+                update(table)
+                .where(
+                    and_(
+                        *(
+                            table.c[column] == bindparam(f"pk_{column}")
+                            for column in primary_keys
+                        ),
+                        table.c.is_backup.is_(False),
+                        *(
+                            table.c[column] == bindparam(f"v_{column}")
+                            for column in checked
+                        ),
+                    )
                 )
+                .values(is_backup=True)
+            )
+            for chunk in _chunks(rows):
+                # One executemany round trip per batch, same optimistic guard.
                 await connection.execute(
-                    update(table)
-                    .where(and_(*conditions))
-                    .values(is_backup=True)
+                    statement,
+                    [
+                        {
+                            **{
+                                f"pk_{column}": row[column]
+                                for column in primary_keys
+                            },
+                            **{
+                                f"v_{column}": row[column] for column in checked
+                            },
+                        }
+                        for row in chunk
+                    ],
                 )
+
+
+def _write_snapshot(
+    path: Path, temp_path: Path, rows_by_table: dict[str, list[dict]]
+) -> None:
+    """Blocking snapshot write; callers run it via asyncio.to_thread."""
+    if path.exists():
+        shutil.copy2(path, temp_path)
+    dest = create_engine(sqlite_sync_url(temp_path))
+    try:
+        with dest.begin() as connection:
+            _prepare_snapshot(connection)
+        for name, values in rows_by_table.items():
+            with dest.begin() as connection:
+                _upsert_rows(
+                    connection,
+                    metadata.tables[name],
+                    [dict(value, is_backup=True) for value in values],
+                )
+    finally:
+        dest.dispose()
 
 
 async def export_to_sqlite(
@@ -104,15 +158,10 @@ async def export_to_sqlite(
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
     _remove_sqlite_files(temp_path)
-    if path.exists():
-        shutil.copy2(path, temp_path)
 
-    dest = create_engine(sqlite_sync_url(temp_path))
     exported: dict[str, int] = {}
     rows_by_table: dict[str, list[dict]] = {}
     try:
-        with dest.begin() as connection:
-            _prepare_snapshot(connection)
         async with engine.connect() as source:
             if source.dialect.name == "postgresql":
                 # One consistent read snapshot for every table in this backup.
@@ -134,25 +183,17 @@ async def export_to_sqlite(
                     continue
                 exported[table.name] = len(values)
                 rows_by_table[table.name] = values
-                # shortcut: snapshot writes block the loop; move to a thread if backups grow.
-                with dest.begin() as connection:
-                    _upsert_rows(
-                        connection,
-                        table,
-                        [dict(value, is_backup=True) for value in values],
-                    )
 
-        dest.dispose()
+        # File copy + upserts stay off the event loop.
+        await asyncio.to_thread(_write_snapshot, path, temp_path, rows_by_table)
+
         if not exported and path.exists():
             _remove_sqlite_files(temp_path)
             return {}
         os.replace(temp_path, path)
     except Exception:
-        dest.dispose()
         _remove_sqlite_files(temp_path)
         raise
-    finally:
-        dest.dispose()
 
     await _mark_backed_up(engine, rows_by_table)
     return exported

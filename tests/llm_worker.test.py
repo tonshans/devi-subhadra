@@ -333,3 +333,37 @@ def test_worker_rejects_content_outside_the_per_call_model():
                 await worker("idle", structured_model=SupervisorDecision)
 
     asyncio.run(scenario())
+
+
+def test_last_usage_is_isolated_between_concurrent_calls():
+    async def handler(request):
+        prompt = json.loads(request.content)["messages"][-1]["content"]
+        await asyncio.sleep(0.01 if prompt == "slow" else 0)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": prompt}}],
+                "usage": {
+                    "prompt_tokens": 1 if prompt == "slow" else 2,
+                    "completion_tokens": 0,
+                },
+            },
+        )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            worker = OpenRouterWorker("api-key", "model/x", client=client)
+
+            async def call(prompt):
+                await worker(prompt)
+                await asyncio.sleep(0)
+                return worker.last_usage
+
+            return await asyncio.gather(call("slow"), call("fast"))
+
+    slow, fast = asyncio.run(scenario())
+
+    assert slow == {"prompt_tokens": 1, "completion_tokens": 0}
+    assert fast == {"prompt_tokens": 2, "completion_tokens": 0}

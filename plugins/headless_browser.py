@@ -1,4 +1,3 @@
-import os
 from typing import Dict, Any, Type, Literal, List
 from pydantic import Field
 from playwright.async_api import async_playwright
@@ -47,79 +46,80 @@ class HeadlessBrowserPlugin(BaseAgentPlugin):
                     headless=True,
                     args=['--disable-blink-features=AutomationControlled'] # Mengurangi jejak bot
                 )
+                try:
+                    # Menggunakan user-agent Windows biasa agar tidak terdeteksi sebagai Headless Chrome
+                    context = await browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        viewport={'width': 1920, 'height': 1080}
+                    )
 
-                # Menggunakan user-agent Windows biasa agar tidak terdeteksi sebagai Headless Chrome
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    viewport={'width': 1920, 'height': 1080}
-                )
+                    # Injeksi cookie untuk Twitter agar bisa melewati Login Wall
+                    if validated.platform == "twitter":
+                        try:
+                            # Dilarang mencetak cookie ini!
+                            auth_token = self.secrets.get_secret("TWITTER_AUTH_COOKIE")
+                            if auth_token:
+                                await context.add_cookies([{
+                                    "name": "auth_token",
+                                    "value": auth_token,
+                                    "domain": ".twitter.com",
+                                    "path": "/"
+                                }])
+                        except Exception as e:
+                            # Jika rahasia tidak ditemukan, coba akses anonim (meski berisiko diblokir X)
+                            pass
 
-                # Injeksi cookie untuk Twitter agar bisa melewati Login Wall
-                if validated.platform == "twitter":
-                    try:
-                        # Dilarang mencetak cookie ini!
-                        auth_token = self.secrets.get_secret("TWITTER_AUTH_COOKIE")
-                        if auth_token:
-                            await context.add_cookies([{
-                                "name": "auth_token",
-                                "value": auth_token,
-                                "domain": ".twitter.com",
-                                "path": "/"
-                            }])
-                    except Exception as e:
-                        # Jika rahasia tidak ditemukan, coba akses anonim (meski berisiko diblokir X)
-                        pass
+                    page = await context.new_page()
+                    # Opsional: Jika menggunakan stealth
+                    # await stealth_async(page)
 
-                page = await context.new_page()
-                # Opsional: Jika menggunakan stealth
-                # await stealth_async(page)
+                    # Routing URL dan Evaluasi DOM berdasarkan platform
+                    if validated.platform == "threads":
+                        url = f"https://www.threads.net/search?q={validated.query}"
 
-                # Routing URL dan Evaluasi DOM berdasarkan platform
-                if validated.platform == "threads":
-                    url = f"https://www.threads.net/search?q={validated.query}"
+                        # Navigasi dan tunggu sampai network stabil
+                        await page.goto(url, wait_until="networkidle", timeout=15000)
 
-                    # Navigasi dan tunggu sampai network stabil
-                    await page.goto(url, wait_until="networkidle", timeout=15000)
+                        # Ekstrak semua teks berdasar tag container postingan spesifik Threads
+                        # Mengambil 5 postingan teratas dan menghilangkan spasi kosong berlebih
+                        posts = await page.evaluate("""
+                            () => {
+                                const elements = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
+                                return elements.slice(0, 5).map(el => el.innerText.trim()).filter(text => text.length > 0);
+                            }
+                        """)
 
-                    # Ekstrak semua teks berdasar tag container postingan spesifik Threads
-                    # Mengambil 5 postingan teratas dan menghilangkan spasi kosong berlebih
-                    posts = await page.evaluate("""
-                        () => {
-                            const elements = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
-                            return elements.slice(0, 5).map(el => el.innerText.trim()).filter(text => text.length > 0);
-                        }
-                    """)
+                    elif validated.platform == "twitter":
+                        url = f"https://twitter.com/search?q={validated.query}&src=typed_query"
 
-                elif validated.platform == "twitter":
-                    url = f"https://twitter.com/search?q={validated.query}&src=typed_query"
+                        await page.goto(url, wait_until="networkidle", timeout=15000)
 
-                    await page.goto(url, wait_until="networkidle", timeout=15000)
+                        # Twitter memuat data secara lambat, kita scroll sedikit untuk memicu rendering
+                        await page.evaluate("window.scrollBy(0, 1000)")
+                        await page.wait_for_timeout(2000) # Tunggu 2 detik
 
-                    # Twitter memuat data secara lambat, kita scroll sedikit untuk memicu rendering
-                    await page.evaluate("window.scrollBy(0, 1000)")
-                    await page.wait_for_timeout(2000) # Tunggu 2 detik
+                        # Ekstrak teks tweet (article tag dengan data-testid="tweet")
+                        posts = await page.evaluate("""
+                            () => {
+                                const elements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+                                return elements.slice(0, 5).map(el => el.innerText.trim()).filter(text => text.length > 0);
+                            }
+                        """)
 
-                    # Ekstrak teks tweet (article tag dengan data-testid="tweet")
-                    posts = await page.evaluate("""
-                        () => {
-                            const elements = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
-                            return elements.slice(0, 5).map(el => el.innerText.trim()).filter(text => text.length > 0);
-                        }
-                    """)
+                    # --- ASSERTION-DRIVEN EXECUTION CHECK ---
+                    # Wajib ada agar Healer Node bisa menangkap jika struktur HTML Meta/X berubah
+                    assert isinstance(posts, list), "Gagal mengekstrak elemen DOM: Hasil evaluasi bukan List"
+                    assert len(posts) > 0, f"Tidak ada teks postingan yang berhasil diekstrak untuk query: {validated.query}"
+                    # ----------------------------------------
 
-                await browser.close()
-
-                # --- ASSERTION-DRIVEN EXECUTION CHECK ---
-                # Wajib ada agar Healer Node bisa menangkap jika struktur HTML Meta/X berubah
-                assert isinstance(posts, list), "Gagal mengekstrak elemen DOM: Hasil evaluasi bukan List"
-                assert len(posts) > 0, f"Tidak ada teks postingan yang berhasil diekstrak untuk query: {validated.query}"
-                # ----------------------------------------
-
-                return PluginOutputSchema(
-                    success=True,
-                    data={"platform": validated.platform, "posts": posts},
-                    assertions_passed=True
-                )
+                    return PluginOutputSchema(
+                        success=True,
+                        data={"platform": validated.platform, "posts": posts},
+                        assertions_passed=True
+                    )
+                finally:
+                    # Selalu tutup Chromium, termasuk saat evaluasi DOM melempar exception.
+                    await browser.close()
 
         except Exception as e:
             # Mengembalikan format gagal standar kontrak

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -81,20 +81,30 @@ class SqlAlchemyBudgetStore:
 
     def __init__(self, url: str, **engine_kwargs) -> None:
         self._engine = create_engine(url, **engine_kwargs)
+        if self._engine.dialect.name == "sqlite":
+
+            @event.listens_for(self._engine, "connect")
+            def _sqlite_pragmas(dbapi_connection, _record) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+                cursor.execute("PRAGMA busy_timeout=5000;")
+                cursor.close()
+
         metadata.create_all(
             self._engine,
             tables=[budget_usage, rate_limit_usage, provider_key_usage],
         )
 
     def _select(self, connection, window: str, bucket: str):
-        return connection.execute(
-            select(budget_usage.c.spent_usd)
-            .where(
-                budget_usage.c.window_date == window,
-                budget_usage.c.bucket == bucket,
-            )
-            .with_for_update()
-        ).scalar()
+        statement = select(budget_usage.c.spent_usd).where(
+            budget_usage.c.window_date == window,
+            budget_usage.c.bucket == bucket,
+        )
+        # SQLite ignores FOR UPDATE; its write lock comes from the insert below.
+        if self._engine.dialect.name != "sqlite":
+            statement = statement.with_for_update()
+        return connection.execute(statement).scalar()
 
     def _upsert(self, connection, window: str, bucket: str, spent: float) -> None:
         insert = (

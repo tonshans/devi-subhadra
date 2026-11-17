@@ -61,11 +61,26 @@ class ContextCompiler:
             return []
         store = self._vector_store
         try:
+            vectorized = await self._ledger.count_vectorized()
             if store is None:
                 # Do not spin up Chroma (or download the model) before any vector exists.
-                if await self._ledger.count_vectorized() == 0:
+                if vectorized == 0:
                     return []
                 store = self.vector_store
+            count = getattr(store, "count", None)
+            if (
+                vectorized > 0
+                and callable(count)
+                and await asyncio.to_thread(count) == 0
+            ):
+                reset = await self._ledger.reset_vectorized_flags()
+                logger.warning(
+                    "ChromaDB index is empty while %d SQL rows are marked "
+                    "vectorized; reset %d flags for re-embedding",
+                    vectorized,
+                    reset,
+                )
+                return []
             return await asyncio.to_thread(store.query, query_text, self.long_term_k)
         except Exception:
             logger.exception("long-term recall unavailable; SQL context only")

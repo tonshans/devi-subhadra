@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -18,10 +19,7 @@ from core.budget_governor import (
 )
 from core.cognitive_ledger import (
     AGENT_PAUSE_REASON_KEY,
-    AGENT_PAUSE_UNTIL_KEY,
     KILL_SWITCH_KEY,
-    PAUSE_REASON_KEY,
-    PAUSE_UNTIL_KEY,
     CognitiveLedger,
 )
 from core.context_compiler import ContextCompiler
@@ -29,9 +27,15 @@ from core.halt import find_halt_file, halt_message
 from core.healer_node import HealerNode, ProposePatch
 from core.inner_monologue import InnerMonologue
 from core.memory_manager import MemoryManager
+from core.pause_controller import PauseController
 from core.plugin_loader import PluginLoader, build_extra_tools_prompt
 from core.provider_pool import AllProvidersUnavailable
-from core.schemas import MissionReply, PluginOutputSchema, SupervisorDecision
+from core.schemas import (
+    HealerPatchProposal,
+    MissionReply,
+    PluginOutputSchema,
+    SupervisorDecision,
+)
 from core.supervisor import Supervisor
 from core.vector_store import VectorStore
 
@@ -50,26 +54,8 @@ RESUME_RETRY_SECONDS = 300
 MAX_TOOL_ROUNDS = 3
 
 
-def _parse_until(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value, _UNTIL_FORMAT).replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
-def _display_until(value: str | None) -> str:
-    moment = _parse_until(value)
-    return moment.strftime("%Y-%m-%d %H:%M UTC") if moment else "unknown"
-
-
 class MissionBlockedError(Exception):
     """Raised when the Overseer kill switch refuses new work."""
-
-
-async def _no_patch(attempt: int, error: str) -> dict:
-    raise RuntimeError("No patch proposer configured")
 
 
 def load_plugins(
@@ -136,7 +122,7 @@ class Runtime:
             archived_plugins_dir or "/mnt/agent_atelier/archived_plugins"
         )
         self._worker = worker
-        self._propose_patch = propose_patch or _no_patch
+        self._propose_patch = propose_patch
         self._cost = cost_usd
         self._initiative_cost = initiative_cost_usd
         self._input_rate = input_usd_per_million
@@ -158,11 +144,36 @@ class Runtime:
         self._workspace_dir = workspace_dir
         self._deliver_file = deliver_file
         self._notify = notify
+        self._pause_controller = PauseController(
+            ledger, governor, notify=self._notice
+        )
 
     @property
     def provider(self) -> Any | None:
         """The worker when it is a provider pool (it exposes status_lines)."""
         return self._worker if hasattr(self._worker, "status_lines") else None
+
+    async def _default_propose_patch(self, attempt: int, error: str) -> Any:
+        """Ask the configured proposer, else the worker, for a patch."""
+        if self._propose_patch is not None:
+            return await self._propose_patch(attempt, error)
+        if self._worker is not None:
+            prompt = (
+                f"HEALER ATTEMPT {attempt}. The worker failed with:\n{error}\n"
+                "Propose a minimal patch that fixes the root cause. patched_code "
+                "must be self-contained and embedded_assertions must verify it."
+            )
+            try:
+                proposal = await self._worker(
+                    prompt, structured_model=HealerPatchProposal
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"No patch proposer configured: worker cannot propose ({exc})"
+                ) from exc
+            if isinstance(proposal, HealerPatchProposal):
+                return proposal
+        raise RuntimeError("No patch proposer configured")
 
     async def _default_initiative(self) -> int:
         decayed = await self._memory.decay_memories()
@@ -207,6 +218,17 @@ class Runtime:
             logger.exception("curiosity cycle failed")
             return
         usage = getattr(self._worker, "last_usage", None)
+        try:
+            self._worker.last_usage = None
+        except AttributeError:
+            pass
+        tokens = (
+            int(usage.get("prompt_tokens", 0))
+            + int(usage.get("completion_tokens", 0))
+            if usage
+            else 0
+        )
+        self._governor.record_api_usage(1, tokens, side="AGENT")
         if not isinstance(decision, SupervisorDecision):
             return
 
@@ -284,113 +306,24 @@ class Runtime:
             logger.exception("pause notification failed")
 
     def _pause_text(self, metric: str, *, agent_only: bool) -> str:
-        metric_name = metric.lower()
-        if agent_only:
-            used = self._governor.used(metric_name, "AGENT")
-            cap = self._governor.agent_cap(metric_name)
-            return (
-                f"Agent initiative paused: agent budget ratio reached on {metric} "
-                f"({used}/{cap}). Human chat still works. Auto-resume at "
-                f"{self._governor.resume_at_iso(metric)}; use "
-                "/agent-freetime on to let the agent use the full limit."
-            )
-        used = self._governor.used(metric_name)
-        limit = self._governor.limit(metric_name)
-        return (
-            f"Agent paused: {metric} limit {used}/{limit} reached. "
-            f"No LLM calls until {self._governor.resume_at_iso(metric)}. "
-            "Send /status for usage or /resume-agent to resume now."
-        )
+        return self._pause_controller.pause_text(metric, agent_only=agent_only)
 
     async def _pause_all(self, metric: str) -> str:
-        reason = f"rate_limit:{metric}"
-        message = self._pause_text(metric, agent_only=False)
-        previous = await self._ledger.get_system_state(PAUSE_REASON_KEY)
-        await self._ledger.set_system_state(PAUSE_REASON_KEY, reason)
-        await self._ledger.set_system_state(
-            PAUSE_UNTIL_KEY, self._governor.resume_at_iso(metric)
-        )
-        await self._ledger.set_system_state(KILL_SWITCH_KEY, "1")
-        await self._ledger.pause_active_threads()
-        if previous != reason:
-            await self._notice(message)
-        return message
+        return await self._pause_controller.pause_all(metric)
 
     async def _pause_agent(self, metric: str) -> str:
-        reason = f"budget_ratio:{metric}"
-        message = self._pause_text(metric, agent_only=True)
-        previous = await self._ledger.get_system_state(AGENT_PAUSE_REASON_KEY)
-        await self._ledger.set_system_state(AGENT_PAUSE_REASON_KEY, reason)
-        await self._ledger.set_system_state(
-            AGENT_PAUSE_UNTIL_KEY, self._governor.resume_at_iso(metric)
-        )
-        await self._ledger.pause_active_threads(origin="AGENT")
-        if previous != reason:
-            await self._notice(message)
-        return message
+        return await self._pause_controller.pause_agent(metric)
 
     async def _limit_gate(self, side: str) -> str | None:
-        """Block new work when the global limit or the agent share is spent."""
-        metric = self._governor.hard_limit_reached()
-        if metric is not None:
-            return await self._pause_all(metric)
-        if side != "AGENT":
-            return None
-        reason = await self._ledger.get_system_state(AGENT_PAUSE_REASON_KEY)
-        if reason and reason.startswith("budget_ratio:"):
-            return self._pause_text(reason.split(":", 1)[1], agent_only=True)
-        metric = self._governor.agent_limit_reached()
-        if metric is not None:
-            return await self._pause_agent(metric)
-        return None
+        return await self._pause_controller.limit_gate(side)
 
     async def auto_resume(self) -> bool:
         """Lift rate-limit pauses once their window reset; manual pauses stay."""
-        resumed = False
-        now = datetime.now(timezone.utc)
-        reason = await self._ledger.get_system_state(PAUSE_REASON_KEY)
-        if reason and reason.startswith("rate_limit:"):
-            until = _parse_until(
-                await self._ledger.get_system_state(PAUSE_UNTIL_KEY)
-            )
-            if (
-                until is not None
-                and now >= until
-                and self._governor.hard_limit_reached() is None
-            ):
-                await self._ledger.set_system_state(PAUSE_REASON_KEY, "")
-                await self._ledger.set_system_state(PAUSE_UNTIL_KEY, "")
-                await self._ledger.set_system_state(KILL_SWITCH_KEY, "0")
-                await self._ledger.unpause_threads()
-                resumed = True
-        reason = await self._ledger.get_system_state(AGENT_PAUSE_REASON_KEY)
-        if reason and reason.startswith("budget_ratio:"):
-            until = _parse_until(
-                await self._ledger.get_system_state(AGENT_PAUSE_UNTIL_KEY)
-            )
-            if (
-                until is not None
-                and now >= until
-                and self._governor.agent_limit_reached() is None
-            ):
-                await self._ledger.set_system_state(AGENT_PAUSE_REASON_KEY, "")
-                await self._ledger.set_system_state(AGENT_PAUSE_UNTIL_KEY, "")
-                await self._ledger.unpause_threads(origin="AGENT")
-                resumed = True
-        return resumed
+        return await self._pause_controller.auto_resume()
 
     async def pause_notice(self) -> str | None:
         """Human-readable reason when a rate limit (not a manual pause) blocks."""
-        reason = await self._ledger.get_system_state(PAUSE_REASON_KEY)
-        if not reason or not reason.startswith("rate_limit:"):
-            return None
-        metric = reason.split(":", 1)[1]
-        until = await self._ledger.get_system_state(PAUSE_UNTIL_KEY)
-        return (
-            f"Agent paused: {metric} limit reached. No LLM calls until "
-            f"{_display_until(until)}. Send /status for usage or /resume-agent "
-            "to resume now."
-        )
+        return await self._pause_controller.pause_notice()
 
     def _token_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
         return (
@@ -468,23 +401,9 @@ class Runtime:
             )
             return gate
 
-        await self._ledger.record_thread_attempt(thread_id)
-        pressure = self._governor.check_rate_limit() == WAITING_FOR_QUOTA
-        context = await self._compiler.compile_context(
-            thread_id,
-            query,
-            pressure,
-            extra_tools=await self._tool_catalog_prompt(),
+        context = await self._prepare_mission_context(
+            thread_id, query, record_request=record_request
         )
-        if record_request:
-            # Persist the request so a crashed mission can be resumed later.
-            await self._ledger.create(
-                "ledger_entries",
-                thread_id=thread_id,
-                tag="TINDAKAN",
-                content=query,
-                token_count=self._compiler.estimate_tokens(query),
-            )
 
         paid = thread["origin"] != "HUMAN"
         priced = self._input_rate > 0 or self._output_rate > 0
@@ -570,7 +489,7 @@ class Runtime:
                     self._governor.record_api_usage(1, tokens, side=side)
 
             outcome = await self._supervisor.delegate_worker(
-                run_worker, self._propose_patch
+                run_worker, self._default_propose_patch
             )
             outcome_status = outcome.status
             raw_reply: object = ""
@@ -707,6 +626,57 @@ class Runtime:
                 reply = f"{reply}\nBudget exhausted; initiative paused."
                 break
 
+        return await self._record_mission_completion(
+            thread_id=thread_id,
+            reply=reply,
+            files=files,
+            side=side,
+            initiator=initiator,
+            worker_succeeded=worker_succeeded,
+            outcome_status=outcome_status,
+            bucket=bucket,
+            tokens_used=context.token_count,
+            cost=cost,
+            last_audit_id=last_audit_id,
+        )
+
+    async def _prepare_mission_context(
+        self, thread_id: str, query: str, *, record_request: bool
+    ) -> Any:
+        await self._ledger.record_thread_attempt(thread_id)
+        pressure = self._governor.check_rate_limit() == WAITING_FOR_QUOTA
+        context = await self._compiler.compile_context(
+            thread_id,
+            query,
+            pressure,
+            extra_tools=await self._tool_catalog_prompt(),
+        )
+        if record_request:
+            # Persist the request so a crashed mission can be resumed later.
+            await self._ledger.create(
+                "ledger_entries",
+                thread_id=thread_id,
+                tag="TINDAKAN",
+                content=query,
+                token_count=self._compiler.estimate_tokens(query),
+            )
+        return context
+
+    async def _record_mission_completion(
+        self,
+        *,
+        thread_id: str,
+        reply: str,
+        files: list[str],
+        side: str,
+        initiator: str,
+        worker_succeeded: bool,
+        outcome_status: str,
+        bucket: str,
+        tokens_used: int,
+        cost: float,
+        last_audit_id: str | None,
+    ) -> str:
         reply = await self._deliver_files(reply, files)
 
         gate = await self._limit_gate(side)
@@ -727,7 +697,7 @@ class Runtime:
                 else f"Mission failed via {outcome_status}"
             ),
             budget_bucket=bucket,
-            tokens_used=context.token_count,
+            tokens_used=tokens_used,
             cost_usd=cost,
         )
         entry_id = await self._ledger.create(
@@ -798,6 +768,16 @@ class Runtime:
             return None
         return plugin
 
+    async def _call_plugin(
+        self, plugin: Any, payload: dict
+    ) -> PluginOutputSchema:
+        if inspect.iscoroutinefunction(plugin.execute):
+            return await plugin.execute(payload)
+        output = await asyncio.to_thread(plugin.execute, payload)
+        if inspect.iscoroutine(output):
+            output = await output
+        return output
+
     async def run_plugin(self, name: str, payload: dict) -> PluginOutputSchema:
         notice = self.halt_notice()
         if notice is not None:
@@ -813,7 +793,49 @@ class Runtime:
             return PluginOutputSchema(
                 success=False, data={}, error_message=f"Unknown plugin: {name}"
             )
-        output = await asyncio.to_thread(plugin.execute, payload)
+        output = await self._call_plugin(plugin, payload)
+        if (
+            name == "sandbox_executor"
+            and not output.success
+            and not output.assertions_passed
+            and self._propose_patch is not None
+        ):
+            healed: list[PluginOutputSchema] = []
+
+            async def execute_patch(patched_code: str) -> PluginOutputSchema:
+                result = await self._call_plugin(
+                    plugin,
+                    {
+                        "code": patched_code,
+                        "language": payload.get("language", "python"),
+                        "timeout_seconds": payload.get("timeout_seconds", 10),
+                    },
+                )
+                healed.append(result)
+                return result
+
+            heal_result = await self._supervisor._healer.heal(
+                error=output.error_message or "sandbox assertion failed",
+                execute_patch=execute_patch,
+                propose_patch=self._propose_patch,
+            )
+            if heal_result.success and healed:
+                output = healed[-1]
+        if output.success and name == "register_new_skill":
+            reg_name = output.data.get("plugin_name")
+            if isinstance(reg_name, str) and reg_name:
+                reg_desc = (
+                    output.data.get("description")
+                    or self._plugin_catalog.get(reg_name)
+                    or reg_name
+                )
+                if output.data.get("registered_in_ledger") is False:
+                    await self._ledger.register_plugin(
+                        reg_name, "ATELIER", reg_desc
+                    )
+                self._plugin_catalog[reg_name] = reg_desc
+                # Force the next run_plugin() call to import the new version.
+                self._plugins.pop(reg_name, None)
         if output.success:
             await self._ledger.log_plugin_usage(name)
         return output
@@ -831,6 +853,14 @@ class Runtime:
                 await self._memory.decay_plugins(now)
             except Exception:
                 logger.exception("sleep-mode plugin decay failed; retrying next night")
+            decay_memories = getattr(self._memory, "decay_memories", None)
+            if decay_memories is not None:
+                try:
+                    await decay_memories(now)
+                except Exception:
+                    logger.exception(
+                        "sleep-mode memory decay failed; retrying next night"
+                    )
             return await self._memory.vectorize_pending(now)
         except Exception:
             # One attempt per night: a missing model or a dead Chroma must not

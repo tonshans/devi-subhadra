@@ -130,6 +130,15 @@ class RegisterNewSkill(BaseAgentPlugin):
         if self._ledger is None:
             return None
         try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            return (
+                "cannot update the plugin registry from inside a running event "
+                "loop; let the runtime register it"
+            )
+        try:
             asyncio.run(
                 self._ledger.register_plugin(
                     plugin.plugin_name, "ATELIER", plugin.description
@@ -250,6 +259,8 @@ class RegisterNewSkill(BaseAgentPlugin):
                 "plugin_name": request.plugin_name,
                 "path": str(plugin_path),
                 "tests_passed": True,
+                "description": loaded.description,
+                "registered_in_ledger": self._ledger is not None,
             },
         )
 
@@ -297,5 +308,7 @@ class RegisterNewSkill(BaseAgentPlugin):
                 "plugin_name": request.plugin_name,
                 "path": str(plugin_path),
                 "tests_passed": False,
+                "description": loaded.description,
+                "registered_in_ledger": self._ledger is not None,
             },
         )

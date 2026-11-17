@@ -695,6 +695,20 @@ class CognitiveLedger:
                 total += int(row.scalar() or 0)
         return total
 
+    async def reset_vectorized_flags(self) -> int:
+        """Re-embed everything: Chroma lost its index but SQL still says embedded."""
+        total = 0
+        async with self._engine.begin() as connection:
+            for name in ("ledger_entries", "atelier_discoveries"):
+                table = self._table(name)
+                result = await connection.execute(
+                    update(table)
+                    .where(table.c.is_vectorized.is_(True))
+                    .values(is_vectorized=False, is_backup=False)
+                )
+                total += result.rowcount
+        return total
+
     async def list_threads(self, status: str | None = None) -> list[dict]:
         table = self._table("ledger_threads")
         statement = select(table)

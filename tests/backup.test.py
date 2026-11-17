@@ -230,3 +230,23 @@ def test_backup_loop_keeps_running_until_cancelled(tmp_path):
         await ledger.dispose()
 
     asyncio.run(scenario())
+
+
+def test_export_batches_more_than_fifty_dirty_rows(tmp_path):
+    snapshot = tmp_path / "snapshot.db"
+
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        for index in range(120):
+            await ledger.create(
+                "core_directives", directive_type="VISION", content=f"v{index}"
+            )
+
+        assert await export_to_sqlite(ledger.engine, snapshot) == {
+            "core_directives": 120
+        }
+        # Every chunk was marked clean: nothing is left dirty.
+        assert await export_to_sqlite(ledger.engine, snapshot) == {}
+        await ledger.dispose()
+
+    asyncio.run(scenario())

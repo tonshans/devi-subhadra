@@ -4,12 +4,9 @@ Vectors live in ./data/chroma_db with Chroma's built-in all-MiniLM-L6-v2 ONNX
 embedding function. No external embedding API is ever called; the model weights
 are downloaded once into the Chroma cache on first use, then run locally.
 
-KNOWN GAP (deliberately not fixed yet): the Chroma directory is NOT part of the
-SQLite snapshot/backup. SQLite stays the source of truth and rows carry
-`is_vectorized = True`, so if ./data/chroma_db is lost or moved without its
-files, those rows are never re-embedded and semantic recall silently goes empty.
-Fix when backups matter: reset is_vectorized to False for both tables when the
-collection is empty (or checksum/restore the directory next to the snapshot).
+If ./data/chroma_db is lost or moved without its files, ContextCompiler sees
+`count_vectorized() > 0` but an empty collection and calls
+`reset_vectorized_flags()` so the next Sleep Mode cycle re-embeds everything.
 """
 
 from __future__ import annotations

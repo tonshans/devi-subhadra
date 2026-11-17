@@ -120,6 +120,18 @@ class AntigravityDelegate(BaseAgentPlugin):
         return resolved
 
     def execute(self, payload: dict[str, Any]) -> PluginOutputSchema:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.aexecute(payload))
+        # Sync plugins are run in a worker thread by the runtime; a caller that
+        # already owns the loop must await aexecute() instead.
+        return self._failure(
+            "AntigravityDelegate.execute() cannot run inside an event loop; "
+            "await aexecute() instead."
+        )
+
+    async def aexecute(self, payload: dict[str, Any]) -> PluginOutputSchema:
         request = AntigravityPayload.model_validate(payload)
         if not hasattr(self, "_roots"):
             return self._failure("AntigravityDelegate is not initialized.")
@@ -129,7 +141,7 @@ class AntigravityDelegate(BaseAgentPlugin):
                 f"Path '{request.target_directory}' resolves outside the agent roots."
             )
         try:
-            return asyncio.run(self._run(request, cwd))
+            return await self._run(request, cwd)
         except OSError as exc:
             return self._failure(f"Failed to start agy: {exc}")
 

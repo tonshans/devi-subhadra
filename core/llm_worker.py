@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from contextvars import ContextVar
+from typing import Any, Optional
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -30,7 +31,31 @@ def _schema_instruction(model: type[BaseModel]) -> str:
     )
 
 
-class OpenRouterWorker:
+_UNSET = object()
+
+
+class LastUsageState:
+    """Per-task `last_usage` so concurrent calls on one worker stay isolated."""
+
+    def __init__(self) -> None:
+        self._last_usage_var: ContextVar[Any] = ContextVar(
+            "last_usage", default=_UNSET
+        )
+        # Fallback for readers in another context (tests, sync callers).
+        self._last_usage_fallback: Optional[dict] = None
+
+    @property
+    def last_usage(self) -> Optional[dict]:
+        value = self._last_usage_var.get()
+        return self._last_usage_fallback if value is _UNSET else value
+
+    @last_usage.setter
+    def last_usage(self, value: Optional[dict]) -> None:
+        self._last_usage_var.set(value)
+        self._last_usage_fallback = value
+
+
+class OpenRouterWorker(LastUsageState):
     def __init__(
         self,
         api_key: str,
@@ -46,8 +71,7 @@ class OpenRouterWorker:
         self._endpoint = endpoint
         self._timeout = timeout
         self._structured = structured
-        # Set per call from the response `usage` block; None when absent.
-        self.last_usage: Optional[dict] = None
+        super().__init__()
 
     @property
     def model(self) -> str:
@@ -105,7 +129,7 @@ class OpenRouterWorker:
         return content
 
 
-class GeminiWorker:
+class GeminiWorker(LastUsageState):
     """Gemini generateContent worker; same call contract as OpenRouterWorker."""
 
     def __init__(
@@ -123,7 +147,7 @@ class GeminiWorker:
         self._endpoint = endpoint
         self._timeout = timeout
         self._structured = structured
-        self.last_usage: Optional[dict] = None
+        super().__init__()
 
     @property
     def model(self) -> str:

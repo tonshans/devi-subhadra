@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Literal, Type
+from typing import Any, Awaitable, Dict, Literal, Type
 
 from core.schemas import PluginOutputSchema, StrictBaseModel
 
@@ -35,8 +35,10 @@ class BaseAgentPlugin(ABC):
         """Prepare resources; return True when ready."""
 
     @abstractmethod
-    def execute(self, payload: Dict[str, Any]) -> PluginOutputSchema:
-        """Run the plugin and return the locked output schema."""
+    def execute(
+        self, payload: Dict[str, Any]
+    ) -> PluginOutputSchema | Awaitable[PluginOutputSchema]:
+        """Run the plugin and return the locked output schema (sync or async)."""
 
     @abstractmethod
     def shutdown(self) -> None:

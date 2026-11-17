@@ -326,7 +326,6 @@ async def approve_skill(ctx: CommandContext, args: str) -> str:
     manager = RegisterNewSkill(
         plugins_dir=ctx.plugins_dir,
         archived_dir=Path(ctx.settings.paths.atelier_dir) / "archived_plugins",
-        ledger=ctx.ledger,
         require_approval=False,
     )
     payload = {
@@ -335,10 +334,15 @@ async def approve_skill(ctx: CommandContext, args: str) -> str:
         "new_code": code.read_text(encoding="utf-8"),
         "new_test_code": test.read_text(encoding="utf-8"),
     }
-    # execute() runs pytest and asyncio.run(); keep it off the event loop.
+    # execute() runs pytest; keep it off the event loop.
     result = await asyncio.to_thread(manager.execute, payload)
     if not result.success:
         return f"skill {name} not activated: {result.error_message}"
+    # The manager runs ledger-free here; register on the main loop instead of
+    # asyncio.run() on ctx.ledger from a worker thread.
+    await ctx.ledger.register_plugin(
+        name, "ATELIER", result.data.get("description") or name
+    )
     code.unlink(missing_ok=True)
     test.unlink(missing_ok=True)
     return f"skill {name} is active and registered; it shows up in the tool catalog."

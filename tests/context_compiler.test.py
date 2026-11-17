@@ -392,3 +392,32 @@ def test_vectorized_entries_leave_the_short_term_window(tmp_path):
         assert "already embedded fact" not in context.prompt
 
     asyncio.run(scenario())
+
+
+def test_empty_chroma_index_resets_vectorized_flags_for_reembedding(tmp_path):
+    class EmptyIndex:
+        def count(self):
+            return 0
+
+        def query(self, text, k=5):
+            raise AssertionError("query must not run on an empty index")
+
+    async def scenario():
+        ledger, compiler = await _setup(tmp_path, vector_store=EmptyIndex())
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        entry_id = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="facts that lost their vectors",
+        )
+        await ledger.mark_vectorized("ledger_entries", [entry_id])
+
+        await compiler.compile_context(
+            thread_id, "recall?", rpm_pressure_high=False
+        )
+
+        assert (await ledger.read("ledger_entries", entry_id))["is_vectorized"] is False
+        assert await ledger.count_vectorized() == 0
+
+    asyncio.run(scenario())

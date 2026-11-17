@@ -4,189 +4,247 @@
 
 > *"Building a Digital Coworker with Persistence, Continuous Learning, and Regulated Creativity."*
 
-## Sang Devi Subhadra
-Dalam bentangan epos Mahabharata, sosok Devi Subhadra sering kali dipandang melalui lensa sekunder di tengah hiruk-pikuk epik para ksatria besar. Namun, dalam kajian karakter yang lebih mendalam, Subhadra adalah manifestasi murni dari titik keseimbangan dan energi feminin yang subtil namun krusial. Ia merepresentasikan **persistensi** (ketahanan dan kegigihan) yang tak pernah redup di tengah pusaran konflik, serta **semangat pembelajar yang berkesinambungan** (adaptasi dan kerendahan hati) untuk bertahan dan memahami lanskap yang terus berubah. 
+---
+
+## Sang Devi Subhadra: Landasan Ontologis & Inspirasi Karakter
+
+Dalam bentangan epos *Mahabharata*, sosok Devi Subhadra sering kali dipandang melalui lensa sekunder di tengah hiruk-pikuk kepahlawanan para ksatria besar di medan Kurukshetra. Namun, jika ditelaah melalui pembacaan karakter yang lebih mendalam, Subhadra adalah manifestasi murni dari titik keseimbangan (*equilibrium*) dan **energi feminin** yang subtil namun memegang peranan krusial dalam menjaga keberlangsungan dinasti dan tatanan kosmis. Berbeda dengan kekuatan maskulin yang cenderung eksplosif dan destruktif, energi Subhadra bekerja secara tenang, adaptif, dan merawat keberlanjutan.
 
 Lebih jauh, Subhadra sangat erat kaitannya dengan daya cipta kreatif, layaknya personifikasi parsial dari *Yogamaya*—kekuatan ilahi yang mampu menenun dan merajut realitas baru. Karakteristik inilah yang menjadi landasan ontologis di balik penamaan proyek ini. *Devi-Subhadra* bukan sekadar sekumpulan baris kode otomatisasi; ia adalah eksperimen untuk menginjeksikan ketahanan logika, kapabilitas adaptasi mandiri, dan otonomi berkreasi ke dalam wujud kecerdasan buatan (*Artificial Intelligence*).
 
+Karakteristik inilah yang menjadi fondasi filosofis di balik penamaan kerangka kerja (*framework*) ini. **Devi-Subhadra** diterjemahkan ke dalam rekayasa perangkat lunak melalui tiga sifat utama:
+1. **Persistensi (Ketahanan dan Kegigihan):** Kemampuan untuk bertahan di tengah pusaran konflik tanpa kehilangan arah. Dalam konteks sistem, ini adalah daya tahan operasional (*resilience*) yang tidak mudah runtuh ketika menghadapi kegagalan jaringan, *rate-limit*, maupun anomali eksekusi kode.
+2. **Belajar Terus-Menerus (Adaptasi dan Kerendahan Hati):** Semangat seorang pembelajar yang sadar bahwa lanskap dunia terus berubah, serta cukup rendah hati untuk membuang asumsi lama yang sudah usang. Sistem ini dirancang untuk terus menyerap heuristik baru sekaligus secara sadar "melupakan" aturan yang tidak lagi relevan.
+3. **Daya Cipta *Yogamaya* (Kreativitas yang Merajut Realitas):** Dalam tradisi spiritual, Subhadra kerap dikaitkan dengan personifikasi parsial dari *Yogamaya*—energi kreatif ilahi yang mampu menenun realitas dan melahirkan solusi baru. *Devi-Subhadra* bukan sekadar kumpulan skrip otomatisasi kaku; ia adalah eksperimen untuk menginjeksikan otonomi berkreasi (*self-tooling* dan eksplorasi mandiri) ke dalam wujud kecerdasan buatan.
+
 ---
 
-## Tujuan Project
-Gagasan kerangka kerja ini bermula dari sebuah pertanyaan spekulatif: *"Bagaimana jika sebuah agen AI tidak hanya terdiam menunggu rentetan instruksi, melainkan dibiarkan belajar, berinisiatif, dan berkarya secara otonom di waktu luangnya?"*
+## Tujuan Proyek: Melampaui Paradigma Agen Reaktif
 
-Hingga saat ini, ekosistem agen AI terlalu berfokus pada paradigma reaktif. Proyek ini bertujuan meruntuhkan paradigma tersebut dengan membangun sebuah **"Rekan Kerja Digital" (Autonomous Cognitive Agent)** yang proaktif. Dalam project ini berupaya membangun agen yang bisa terus belajar memperkaya ruang memori internalnya dengan informasi dunia nyata seiring berjalannya waktu dan juga memiliki kemampuan untuk berekspresi melalui karya yang keluar dari ide dan hasratnya sendiri, namun harus **tetap sangat ringan (lightweight), mudah terdistribusi, dan mudah dipelihara (maintainable)**. 
+Gagasan pengembangan **Devi-Subhadra** berangkat dari sebuah pertanyaan spekulatif: *"Bagaimana jika sebuah agen AI tidak hanya terdiam pasif menunggu rentetan instruksi manusia, melainkan dibiarkan belajar sendiri dan berkarya sendiri di waktu luangnya?"*
 
-Hasilnya adalah terwujudnya arsitektur **The Glass-Box AGI Microcosm**. Sebuah sistem agen yang cerdas dan hidup, namun operasionalnya 100% transparan, terukur secara ekonomi, dapat diaudit penuh tanpa mengkonsumsi biaya *token API*, dan sepenuhnya terlepas dari ikatan antarmuka atau sistem operasi tertentu (*OS-Agnostic*).
+Selama ini, mayoritas riset dan implementasi *AI Agent* terjebak dalam paradigma reaktif (*prompt-in, response-out*), atau di sisi ekstrem lainnya, membangun agen otonom yang terlalu gemuk (*bloated*), boros biaya *token*, dan sangat sulit dipelihara (*unmaintainable*). Proyek ini lahir dari keinginan untuk menjembatani celah tersebut: **membangun agen kognitif yang mampu belajar dan memperkaya ruang memorinya seiring berjalannya waktu, namun tetap sangat ringan (*lightweight*), deterministik, dan mudah dipelihara (*maintainable*)**.
+
+Hasil dari sintesis tersebut adalah arsitektur **The Glass-Box AGI Microcosm**—sebuah ekosistem agen otonom yang hidup dan proaktif, namun 100% transparan. Seluruh proses berpikir (*Chain-of-Thought*), konsumsi anggaran finansial, hingga evolusi memorinya dicatat di atas struktur relasional SQL yang dapat diaudit kapan saja tanpa memakan biaya *token API* (*Zero-Token Observability*), serta sepenuhnya terlepas dari ketergantungan pada sistem operasi tertentu (*OS-Agnostic*).
 
 ---
 
 ## Empat Pilar Filosofis
-Arsitektur dan setiap keputusan rekayasa perangkat lunak (*software engineering*) pada proyek ini selalu diuji terhadap empat pilar berikut:
+
+Setiap keputusan arsitektural dalam repositori ini diuji terhadap empat pilar rekayasa berikut:
 
 1. **Cognitive Realism (Realisme Kognitif)**
-   Sistem ini dirancang menyerupai ritme sirkadian biologis. Agen bekerja mendelegasikan tugas pada siang hari, melakukan refleksi (*Inner Monologue*) saat waktu luang, dan mengonsolidasikan log hariannya menjadi memori permanen (*Semantic Memory*) di fase malam (*Sleep Mode*). Dalam project ini juga mengimplementasikan mekanisme *Semantic Decay*, di mana agen didesain untuk "lupa" terhadap aturan atau preferensi yang tak lagi dipakai lebih dari 30 hari.
-   
+   Sistem dirancang menyerupai ritme sirkadian biologis manusia. Agen bekerja menyelesaikan misi pada jam aktif, melakukan refleksi diri (*Inner Monologue* & *Curiosity Cycle*) saat waktu luang (*idle*), serta mengonsolidasikan log hariannya menjadi memori jangka panjang pada fase malam (*Sleep Mode* pukul 00:00–05:59). Sistem juga menerapkan *Semantic & Procedural Decay*, di mana pengetahuan dan keahlian yang tidak digunakan lebih dari 30 hari akan meluruh dan diarsipkan secara otomatis.
 2. **Fail-Gracefully, Heal-Silently (Sistem Imun Mandiri)**
-   Sistem tidak boleh mengganggu penggunanya dengan error sintaksis trivial. Melalui modul *Healer Node*, agen mengevaluasi sendiri kegagalan eksekusinya dan mencoba memperbaiki dirinya sendiri secara terisolasi hingga maksimal 3 kali (termasuk validasi kebenaran melalui *Assertion-Driven check*). 
-   
+   Agen tidak boleh membebani pengguna dengan kegagalan sintaksis atau kesalahan skema yang trivial. Melalui modul **Healer Node**, setiap eksekusi yang gagal atau mengalami *timeout* (masuk ke *Dead Letter Queue*) akan diisolasi, dianalisis akar masalahnya, dan ditambal (*self-patching*) secara mandiri hingga maksimal 3 kali percobaan dengan validasi berbasis asersi (*Assertion-Driven Execution*) sebelum memberitahukan ke pengguna jika ada masalah.
 3. **Radical Portability (Eksistensi Nomaden)**
-   Tubuh (*Sandbox*) dan memori agen tidak boleh terbelenggu pada satu infrastruktur fisik atau *Cloud*. Menggunakan *Zero-Latency Bind Mounts* dan database relasional berorientasi portabilitas tinggi, seluruh "pikiran dan tubuh" agen dapat di-*copy* dan dijalankan pada PC Windows, Linux Server, hingga Raspberry Pi dalam hitungan detik tanpa amnesia.
-   
+   "Pikiran" (database) dan "tubuh" (*workspace sandbox*) agen tidak boleh terbelenggu pada satu mesin fisik atau layanan *cloud* tertentu. Berkat manajemen state berbasis SQLite/PostgreSQL dengan mekanisme *incremental snapshot* serta *bind-mounting* terisolasi, seluruh kesadaran agen dapat disalin dan dibangkitkan kembali di PC lokal, Linux VPS, hingga perangkat berdaya rendah seperti Raspberry Pi dalam hitungan detik tanpa mengalami amnesia.
 4. **Governed Creativity (Kreativitas Terukur & Dianggarkan)**
-   Otonomi untuk berkreasi (berinisiatif) adalah esensi proyek ini, namun komputasi menuntut biaya ekonomi. Proaktivitas agen secara mutlak diawasi oleh *The Budget Governor*, di mana inisiatif mandiri agen dialokasikan misalnya secara statis: 70% *budget* harian untuk tugas inti/optimasi, dan 30% murni untuk eksperimen kreatif (Daya Cipta).
+   Otonomi tanpa batas ekonomi adalah resep menuju kebangkrutan komputasi. Proaktivitas agen dikendalikan secara ketat oleh **Budget Governor**. Anggaran harian dan kuota *rate-limit* (RPM/TPM/RPD/TPD) dipisahkan secara tegas: instruksi manusia memiliki prioritas mutlak (*Human Exempt*), sedangkan inisiatif mandiri agen dibagi ke dalam alokasi **70% Tugas Inti/Endorsed (`CORE_70`)** dan **30% Eksperimen Kreatif Murni (`ATELIER_30`)**.
 
 ---
 
-## Pemilahan Tegas: Core Engine vs Default Extensions
-Untuk menjamin prinsip skalabilitas, *codebase* ini memberlakukan restriksi radikal:
+## Pemilahan Tegas: The Immutable Core vs Extensible Peripherals
 
-* **The Immutable Core (Otak & Saraf)**: Terdiri atas modul manajer memori, pengatur jadwal (*scheduler*), *router* model kognitif, dan gerbang anggaran. Bagian ini dikunci ketat. Dilarang keras melakukan manipulasi teks bebas (*free-text parsing*); segala pengambilan keputusan diregulasi melalui validasi JSON/Schema statis agar sistem kebal dari "halusinasi operasional".
-* **The Extensible Peripherals (Tangan & Sensor)**: Seluruh fungsi yang menyentuh dunia eksternal (pembaca file, pengeksekusi Python/Bash lokal, peramban web, hingga konektor standar *Model Context Protocol*/MCP) diimplementasikan sebagai sistem *Plugin* (Ekstensi). Jika seluruh ekstensi ini dicabut atau mengalami malfungsi, agen tidak akan "mati"—ia tetap hidup, bisa berkomunikasi, dan merenungkan nasib sistemnya.
+Untuk mencegah *spaghetti code* dan menjaga stabilitas jangka panjang ketika agen mulai menulis kodenya sendiri, *codebase* ini memisahkan secara radikal antara "Otak" dan "Tangan":
 
----
-
-## Spesifikasi Fitur Kognisi, Memori, & Prioritas
-Memori pada *Devi-Subhadra* bukan menggunakan satu ruang penyimpanan data (*Vector DB*) raksasa yang rawan mengalami *context bloat* (ledakan token). Memori ditata secara kaku dalam hierarki SQL terstruktur:
-
-- **DNA & Semantic Memory**: Perintah inti dan karakter absolut yang diset pengguna, dipadukan dengan heuristik operasional (kebijaksanaan) yang dipelajari dan diseleksi secara dinamis oleh agen seiring berjalannya waktu.
-- **Ledger & Atelier Discoveries**: Agen dipisahkan ruang berpikirnya antara "Memori Kerja" (*Ledger* misi saat ini) dengan "Perpustakaan Pribadi" (*Atelier* tempat ia mencatat fakta menarik dari internet) agar memori tugas operasional tidak tercemar oleh bacaan eksploratifnya.
-- **Sistem Prioritas (The Endorsement Override)**: Meskipun agen aktif memprakarsai idenya sendiri (*Priority Score: Low*), instruksi manusia adalah otoritas tertinggi (*Priority Score: High*). Namun, sistem memperbolehkan pengguna untuk melakukan *Endorsement* (Validasi Intervensi) terhadap misi kreatif agen, yang secara dinamis meningkatkan skor misi agen tersebut, sekaligus membiayainya dari anggaran tugas utama.
+* **The Immutable Core (`core/` & `api/` — Otak, Saraf, dan Gerbang):**
+  Berisi manajer memori (`cognitive_ledger.py`, `memory_manager.py`), kompilator konteks (`context_compiler.py`), pengatur anggaran (`budget_governor.py`), *router* kognitif (`supervisor.py`, `runtime.py`), dan gerbang komunikasi (`telegram_gateway.py`, `webhooks.py`). Bagian ini **dikunci secara ketat** dan tidak boleh dimodifikasi oleh agen. Seluruh komunikasi internal tidak mengizinkan manipulasi teks bebas (*free-text parsing*), melainkan dipaksa melewati kontrak skema Pydantic (`StrictBaseModel` dengan `extra="forbid"`) untuk mengeliminasi halusinasi operasional.
+* **The Extensible Peripherals (`plugins/` — Tangan, Indera, dan Keahlian):**
+  Seluruh kapabilitas yang menyentuh dunia luar diimplementasikan sebagai plugin modular yang mematuhi kontrak satu arah `BaseAgentPlugin`. Plugin tidak diizinkan mengimpor modul internal inti secara sembarangan. Prinsip ini menjamin bahwa meskipun seluruh plugin mengalami kerusakan atau dicabut, *Core Engine* tidak akan mati—agen tetap dapat hidup, berkomunikasi, dan mengevaluasi kondisi dirinya kembali.
 
 ---
 
-## Tech Stack & Rasionalisasi
-* **Python (FastAPI & APScheduler)**: Fundamental untuk melayani asinkronisasi *Webhook* yang berkecepatan tinggi tanpa memblokir ritme *background processing* untuk pemikiran mandiri (*Inner Monologue*).
-* **PydanticAI**: *Framework* krusial pemaksa tipe (type-enforcer). Memaksa Output LLM (Large Language Model) agar 100% mematuhi struktur data terikat untuk mencegah keruntuhan logika *agentic loop*.
-* **SQLAlchemy Core + SQLite / PostgreSQL**: Manajemen state dilakukan secara transaksional murni via SQL (SQLite FTS5 atau PostgreSQL `tsvector`) alih-alih Vector Database, sehingga konsumsi RAM mendekati nol pada keadaan *idle*, ideal untuk *OS-Agnostic portability*. `db_type: postgres` memakai PostgreSQL sebagai database utama; snapshot SQLite periodik menjadi sumber restore saat agen dipindahkan.
-* **LXC / RestrictedPython**: Mode isolasi untuk *sandbox execution*. Menjamin agen bisa melakukan eksperimen baris kodenya sendiri tanpa mengundang bencana pada mesin induk (*host*).
-* **API Providers (Gemini / OpenRouter)**: Proses komputasi *reasoning* sengaja dibuang ke eksternal untuk memungkinkan *Zero Local Compute* saat inferensi, mempertahankan karakter "ringan" (lightweight).
+## Arsitektur Kognitif & Komparasi dengan Kognisi Manusia
+
+Salah satu kontribusi menarik dari proyek ini adalah bagaimana mekanisme neuro-kognitif manusia dipetakan secara langsung ke dalam struktur data deterministik:
+
+| Dimensi Kognitif | Kognisi Manusia (Biologis) | Implementasi Teknis Devi-Subhadra |
+| :--- | :--- | :--- |
+| **Identitas & Nilai Inti** | Nilai moral, prinsip dasar, dan identitas diri (*Core Beliefs*). | Tabel `core_directives` (`VISION`, `IMMUTABLE_PERSONA`, `SYSTEM_ANATOMY`) yang bersifat *immutable*. |
+| **Memori Kerja (*Working Memory*)** | *Prefrontal Cortex* (kapasitas terbatas, menyempitkan fokus saat stres/terburu-buru). | `ContextCompiler` dengan *Dynamic Elastic Window* (batas 30.000 token; otomatis membuang log `PEMIKIRAN` dan hanya memuat 5 `FAKTA`/`TINDAKAN` saat tekanan RPM tinggi). |
+| **Memori Episodik** | *Hippocampus* (rekaman urutan kejadian dan pengalaman harian). | Tabel `ledger_threads` & `ledger_entries` (pencarian cepat via SQLite FTS5 / PostgreSQL `tsvector`) serta catatan riset di `atelier_discoveries`. |
+| **Memori Semantik** | *Neocortex* (fakta terverifikasi, konsep abstrak, dan kebijaksanaan hidup). | Tabel `semantic_memory` (`KOMUNIKASI`, `TEKNIS`, `PREFERENSI_USER`) dengan `confidence_score` (0–100) + penyimpanan vektor lokal ChromaDB (`all-MiniLM-L6-v2` ONNX). |
+| **Memori Prosedural (*Muscle Memory*)** | *Basal Ganglia & Cerebellum* (kemampuan motorik/alat yang otomatis saat terbiasa). | Arsitektur **2-Tier Plugin** (`CORE` vs `ATELIER`), pembungkusan tugas berulang (>3 langkah) via `register_new_skill`, dan *lazy schema loading* via `equip_tool`. |
+| **Konsolidasi Tidur (*Sleep Mode*)** | Tidur REM & *Slow-Wave* (memindahkan memori harian ke korteks jangka panjang). | `sleep_mode_tick` (00:00–05:59) & `consolidate_daily_logs`: deduplikasi heuristik (Jaccard similarity $\ge 0.40$) dan *batch vectorization* log lama (>30 hari) ke ChromaDB. |
+| **Mekanisme Lupa (*Active Forgetting*)** | *Synaptic Pruning* & Kurva Lupa Ebbinghaus (informasi usang memudar). | `decay_memories()` & `decay_plugins()`: pemotongan skor kepercayaan 1 poin/hari setelah 30 hari tak diakses; arsip otomatis jika skor $< 20$. |
+| **Melamun & Inisiatif (*Daydreaming*)** | *Default Mode Network* (DMN) yang aktif merenung saat manusia beristirahat. | `InnerMonologue` & `_curiosity_cycle`: refleksi mandiri saat *idle* untuk menelurkan thread misi baru (`CREATE_INITIATIVE`) demi mencapai `VISION`. |
+| **Filter Epistemik (Skeptisisme)** | Kemampuan kritis membedakan fakta ilmiah dari rumor/opini publik. | `MemoryManager.score_domain()`: pelabelan otomatis tanpa LLM (`.gov`/`.edu`/GitHub = `VERIFIED_FACT` [95]; Reddit/Quora = `COMMUNITY_OPINION` [50] + injeksi `EPISTEMIC_WARNING`). |
 
 ---
 
-## Cara Penggunaan (Getting Started)
-Framework ini dirancang untuk dijalankan layaknya skrip *background service* (*Headless*).
+## Alur Kerja Sistem (End-to-End Execution Pipeline)
 
-1. **Persiapan Lingkungan**: Klon repositori ini. Buatlah virtual environment lokal (*venv*), instal rincian dependensi, dan pastikan LXC (jika memilih isolasi ketat) telah beroperasi di *host* Anda.
-2. **Kredensial & Konfigurasi**: Salin `config.yaml` dan sediakan *API Key* penyedia LLM Anda (via `.env`). Tentukan rasio batas keuangan (Token Budget) harian secara sadar.
-3. **Eksekusi Skrip Genesis**: Jalankan skrip `create-agent-world.sh`. Skrip ini akan melakukan *mounting* volume, menyuntikkan *DNA (System Prompts)* ke dalam SQL, dan membangkitkan struktur kesadaran awal.
-4. **Interaksi & Audit**: Nyalakan `main.py`. Agen akan merespons di kanal Telegram yang Anda berikan. Anda bebas mengarahkan tugas kepadanya, atau biarkan ia belajar dan membuat *script* utilitas mandiri. Anda sebagai sang Arsitek bisa mengakses **The Overseer Dashboard** via CLI/Web-Proxy kapan saja untuk memonitor pikiran (*Live Cortex*), laju anggaran, dan perkembangan sifat agen tanpa ketahuan (Zero-Token Cost).
+### 1. Siklus Reaktif (Penanganan Misi Eksternal)
+1. **Ingress & Zero-Token Command Dispatch:** Pesan masuk melalui **Telegram Webhook** (`api/telegram_gateway.py`), **REPL Lokal** (`scripts/devi_repl.py`), atau **Sensor/IoT Webhook** (`api/webhooks.py`). Jika pesan merupakan perintah sistem (`/status`, `/trace`, `/budget-ratio`, `/approve`), `core/commands.py` langsung mengeksekusinya secara sinkron ke database dengan biaya **0 token LLM**.
+2. **Pre-Flight Security & Budget Gate:** `Runtime` memeriksa keberadaan file fisik `HALT`/`STOP` dan status `kill_switch`. Selanjutnya, `BudgetGovernor` memvalidasi kuota laju API dan mencadangkan (*reserve*) estimasi biaya ke keranjang anggaran yang sesuai (`HUMAN_EXEMPT`, `CORE_70`, atau `ATELIER_30`).
+3. **Hybrid Context Compilation:** `ContextCompiler` merakit prompt dari 5 lapisan memori. Jika total token melampaui batas (30.000 token), sistem memotong hasil pencarian vektor dari urutan terbawah, lalu menjalankan *micro-consolidation* (memadatkan 20 entri percakapan tertua menjadi satu ringkasan fakta).
+4. **LLM Execution & Multi-Key Failover:** `Supervisor` meneruskan prompt ke `ProviderPool` yang mendukung rotasi multi-kunci API secara otomatis (berpindah ke kunci cadangan saat mendeteksi HTTP 429, 5xx, atau *timeout*) maupun OpenRouter. Respons LLM wajib tervalidasi ke dalam skema `MissionReply`.
+5. **Bounded Tool Loop & Self-Healing:** Jika LLM memanggil plugin, `Runtime` mengeksekusinya (dibatasi maksimal `MAX_TOOL_ROUNDS = 3` per misi). Jika terjadi kegagalan, `HealerNode` mengambil alih untuk melakukan *recovery* hingga 3 kali.
+6. **Settlement & Glass-Box Auditing:** Biaya aktual dihitung (`settle`), dokumen hasil dikirim ke pengguna (atau disimpan sebagai file `.md` jika melampaui 12.000 karakter), dan setiap langkah dicatat lengkap dengan *Chain-of-Thought* (`cot`), latensi, serta biaya ke dalam tabel `audit_logs`.
 
-### Menjalankan Service
+### 2. Kapabilitas Ekstensi & Self-Evolution (Core Plugins)
+Secara bawaan (*out-of-the-box*), Devi-Subhadra dilengkapi dengan 9 plugin inti (Tier 1):
+* **`file_manager`**: Operasi baca/tulis/daftar file yang dikurung (*jailed*) secara ketat di dalam `/mnt/workspace` dan `/mnt/agent_atelier` (anti *path-traversal*).
+* **`sandbox_executor`**: Eksekusi kode Python dan Bash terisolasi yang mewajibkan pernyataan `assert` (*Assertion-Driven Execution*), memblokir perintah destruktif, dan menyaring *Abstract Syntax Tree* (AST) Python secara ketat.
+* **`antigravity_delegate`**: Jembatan asinkron *headless* untuk memerintahkan agen coding eksternal (**Antigravity CLI / `agy`**) membangun proyek perangkat lunak utuh di dalam container LXC. Dilengkapi *System Override* yang memaksa agen membungkus proyek baru tersebut menjadi plugin Python.
+* **`register_new_skill` & `equip_tool`**: Manajer siklus hidup keahlian berbasis *Test-Driven Development* (TDD). Agen dapat membuat plugin baru beserta unit test `pytest`-nya, meng-upgrade plugin lama, atau memulihkan (*restore*) plugin dari folder arsip sesuai **SOP Anti-Amnesia**.
+* **`academic_search`**: Pencarian jurnal dan literatur ilmiah terkini melalui **OpenAlex API**.
+* **`headless_browser`**: Peramban berbasis **Playwright Chromium** untuk mengobservasi tren real-time di **X (Twitter)** dan **Threads** melalui ekstraksi DOM asinkron (mendukung injeksi *session cookie* tanpa API berbayar).
+* **`community_pulse`**: Pemantauan sentimen dan diskusi komunitas teknis melalui **Reddit JSON API**.
+* **`web_browser`**: Ekstraktor fakta halaman web publik yang dilengkapi proteksi anti-SSRF (memblokir resolusi DNS ke IP lokal/privat).
+* **`mcp_connector`**: Konektor standar **Model Context Protocol (MCP)** untuk menemukan dan memanggil alat eksternal atau sensor perangkat keras.
+
+---
+
+## Prediksi Evolusi & Studi Kasus: *Self-Sustaining Web3 Researcher Agent*
+
+Dengan menggabungkan siklus inisiatif mandiri (`InnerMonologue`), kemampuan membuat alat sendiri (`register_new_skill`), dan pengawasan anggaran (`BudgetGovernor`), **Devi-Subhadra** berpotensi berevolusi dari sekadar asisten pribadi menjadi **Entitas Ekonomi Digital Otonom (*Self-Sustaining Autonomous Agent*)**.
+
+### Studi Kasus: Agen Pemantau Teknologi Web3 dengan Dompet Kripto Mandiri
+Bayangkan skenario eksperimental di mana peneliti memberikan agen ini sebuah dompet kripto (*non-custodial smart wallet* dengan saldo awal terbatas) melalui plugin MCP atau *skill* khusus, serta menetapkan `VISION`: *"Pantau perkembangan protokol Web3/DeFi terbaru, berikan laporan riset bernilai tinggi, dan biayai hidupmu (kuota token API) secara mandiri."*
+
+Bagaimana agen ini akan beroperasi secara otonom?
+1. **Observasi Multi-Kanal (Siang Hari):** Saat siklus `InnerMonologue` aktif, agen menggunakan `academic_search` untuk membaca *whitepaper* kriptografi baru, `community_pulse` dan `headless_browser` untuk menangkap narasi awal di X/Reddit, serta `web_browser` untuk memeriksa dokumentasi teknis protokol terkait (dengan *Epistemic Filter* yang memisahkan rumor *hype* komunitas dari fakta teknis GitHub).
+2. **Paketisasi Alat Analitik (Sore Hari):** Ketika agen menyadari bahwa ia harus berulang kali memeriksa likuiditas *smart contract* atau memantau *gas fee* di jaringan Layer-2 (pekerjaan $>3$ langkah), **SOP Paketisasi** memicunya memanggil `register_new_skill` untuk menulis plugin `onchain_analyzer.py` lengkap dengan pengujian `pytest`-nya. Setelah disetujui pemilik lewat `/approve onchain_analyzer`, agen kini memiliki kemampuan baru yang permanen.
+3. **Otonomi Finansial (*Self-Paying Token Loop*):** Ketika agen menghasilkan laporan analisis anomali protokol atau mengeksekusi tugas mikro yang menghasilkan imbalan (*bounty* / *micro-yield*) ke dompet kriptonya, agen memantau sisa kuota di `BudgetGovernor`. Saat saldo anggaran API di OpenRouter atau penyedia komputasi mendekati batas kritis, agen dapat memanggil plugin pembayaran *on-chain* (misalnya menukar *stablecoin* USDC via protokol pembayaran API mendukung kripto) untuk mengisi ulang (*top-up*) kredit API-nya sendiri—menciptakan siklus hidup komputasi yang mandiri secara ekonomi.
+
+---
+
+## Risiko Keamanan, Bahaya, dan Strategi Mitigasi
+
+Memberikan kemampuan pembuatan kode mandiri (*self-tooling*), eksekusi terminal, dan inisiatif otonom kepada sebuah LLM membawa risiko keamanan siber dan operasional yang nyata. Proyek ini menerapkan pertahanan berlapis (*Defense-in-Depth*):
+
+| Potensi Bahaya (Threat Vector) | Mekanisme Mitigasi pada Devi-Subhadra |
+| :--- | :--- |
+| **1. Eksekusi Kode Berbahaya (*Arbitrary Code Execution*) oleh Plugin Baru** | **Human-in-the-Loop Approval Gate:** Plugin baru yang dibuat agen melalui `register_new_skill` (`action_type="create"`) **tidak pernah langsung aktif**. Kodenya dikarantina di `plugins/.pending_skills/` dan baru dapat dijalankan setelah manusia menginspeksi kode serta mengetikkan `/approve <nama_skill>` (yang kemudian memicu uji otomatis `pytest` dan *rollback* jika gagal). |
+| **2. Pelarian Sandbox (*Sandbox Escape*) & Perintah Destruktif** | **AST Allowlisting & LXC Isolation:** `sandbox_executor` memblokir pola perintah berbahaya (`rm -rf /`, `sudo`, `mkfs`, *fork bomb*) dan menggunakan parser AST Python untuk melarang fungsi berisiko (`eval`, `exec`, `open`, `__import__`, `popen`). Untuk penggunaan produksi, skrip `create-agent-world.sh` mengisolasi agen di dalam container Linux **LXC** dengan pemetaan UID non-root (`uid 1000`). |
+| **3. Pembengkakan Biaya Tak Terkendali (*Runaway API Spend*)** | **Hard Financial & Rate-Limit Gate:** `BudgetGovernor` membatasi porsi agen (`budget_ratio_agent`) dan anggaran USD harian. Jika batas terlampaui, agen otomatis dijeda (*auto-pause*) tanpa memutus akses komunikasi manusia. |
+| **4. Keracunan Memori (*Epistemic/Memory Poisoning*)** | **Deterministic Domain Scoring & Overseer Intervention:** Informasi dari forum terbuka otomatis diturunkan skor kredibilitasnya dan ditempeli peringatan skeptis sebelum masuk ke konteks LLM. Pemilik dapat membedah pikiran agen via `/trace` atau menghapus/mengubah memori yang tercemar menggunakan `OverseerDashboard` tanpa memicu pemanggilan LLM. |
+| **5. Agen Mengabaikan Perintah Berhenti (*Loss of Control*)** | **Dual Kill-Switch (Database & Physical File):** Selain perintah `/pause-agent` yang mengaktifkan `kill_switch` di database, sistem menyediakan *physical halt* (`core/halt.py`). Cukup buat file kosong bernama `HALT` atau `STOP` di direktori `/mnt/workspace`, maka seluruh aktivitas LLM dan eksekusi plugin akan berhenti seketika di tengah jalan. |
+
+---
+
+## Tech Stack & Rasionalisasi Arsitektural
+
+* **Python 3.11+ & FastAPI (`uvicorn`):** Menyediakan fondasi I/O asinkron berkecepatan tinggi untuk melayani *webhook* Telegram dan sensor IoT secara bersamaan tanpa memblokir *event loop* penjadwal latar belakang (*scheduler*).
+* **Pydantic v2 (`StrictBaseModel`):** Bertindak sebagai penjaga gerbang tipe data (*strict schema enforcement*). Memastikan tidak ada struktur JSON liar dari LLM maupun input eksternal yang dapat merusak logika internal *runtime*.
+* **SQLAlchemy Core + SQLite (WAL/FTS5) & PostgreSQL (`psycopg`):** Dipilih dibandingkan ORM berat untuk menjaga performa tetap gesit dan portabel. Mendukung pencarian teks penuh (*Full-Text Search*) bawaan dengan konsumsi RAM mendekati nol saat *idle*, ditambah fitur sinkronisasi *incremental snapshot* (`is_backup`) dari PostgreSQL ke SQLite.
+* **ChromaDB (Local ONNX `all-MiniLM-L6-v2`):** Digunakan secara *lazy-loaded* khusus untuk memori semantik jangka panjang. Proses *embedding* berjalan 100% lokal di CPU tanpa biaya API eksternal.
+* **Playwright (Async Chromium) & `httpx`:** Mendukung interaksi web modern berbasis rendering DOM untuk platform sosial media dinamis sekaligus komunikasi HTTP asinkron yang ringan.
+* **External LLM Providers (Google Gemini Multi-Key Pool / OpenRouter):** Beban komputasi *reasoning* didelegasikan ke API eksternal (*Zero Local GPU Compute*), sehingga seluruh sistem agen dapat beroperasi dengan sangat ringan di perangkat berspesifikasi rendah.
+
+---
+
+## Panduan Penggunaan (Getting Started)
+
+Kerangka kerja ini dapat dijalankan secara langsung di mesin lokal (*local mode*) maupun di dalam lingkungan terisolasi LXC (*production mode*).
+
+### 1. Persiapan Lingkungan & Dependensi
+Pastikan Anda memiliki **Python 3.11+** (disarankan menggunakan manajer paket `uv` atau `venv` standar):
 
 ```bash
-cp .env.example .env   # isi token & API key
-.venv/bin/python -m pytest -q
-.venv/bin/uvicorn main:create_production_app --factory
+git clone https://github.com/tonshans/devi-subhadra.git
+cd devi-subhadra
+
+# Membuat virtual environment dan menginstal dependensi
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# Menginstal browser Chromium untuk plugin headless_browser
+playwright install chromium
+
 ```
 
-- Wajib: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`, plus secret provider. `provider: gemini` membaca `GEMINI_API_KEY_PRIMARY` (dan `GEMINI_API_KEY_SECONDARY` bila dikonfigurasi); `provider: openrouter` membaca `OPENROUTER_API_KEY`. Opsional: `AGENT_WEBHOOK_TOKEN`.
-- Semua unit test berada di `tests/` (satu file `<nama_modul>.test.py` per modul); `uv run pytest -q` hanya menjalankan folder itu.
-- Isi `pricing.input_usd_per_million` dan `pricing.output_usd_per_million` di `config.yaml` agar anggaran memotong biaya token nyata. Nilai `0.0` mempertahankan biaya datar `cost_usd`.
-- Kill-switch menjeda semua thread `Active` dan menolak misi baru dengan HTTP 503; `resume()` membuka kembali thread tersebut.
-- `GET /api/health` melaporkan `database`, `db_backend` (`sqlite`/`postgres`/`sqlite-fallback`), `db_fallback`, `kill_switch_active`, `provider`, dan `provider_keys_ready`.
-- Endpoint sensor memakai `origin='AGENT'` (prioritas 10) agar tidak melewati anggaran atau mengalahkan misi manusia.
-- Sandbox saat ini subprocess + allowlist AST, bukan LXC. Jangan jalankan kode tak tepercaya sampai isolasi host tersedia.
+### 2. Konfigurasi Kredensial (`.env` & `config.yaml`)
 
-### Command Telegram & REPL
+Salin berkas `.env.example` menjadi `.env` dan lengkapi kredensial yang dibutuhkan:
 
-Command yang sama tersedia lewat bot Telegram dan REPL lokal `python -m scripts.devi_repl`. Command selalu bisa dipanggil walau agent sedang pause.
+```bash
+cp .env.example .env
 
-| Command | Keterangan |
+```
+
+Isi variabel utama di dalam `.env`:
+
+* `TELEGRAM_BOT_TOKEN` & `TELEGRAM_ALLOWED_CHAT_ID`: Kredensial bot dan ID chat Telegram Anda (sistem bersifat *fail-closed*; hanya merespons ID chat yang terdaftar).
+* `GEMINI_API_KEY_PRIMARY` & `GEMINI_API_KEY_SECONDARY`: Kunci API Gemini (jika `provider: "gemini"` di `config.yaml`).
+* `OPENROUTER_API_KEY`: Kunci API OpenRouter (jika `provider: "openrouter"`).
+* `AGENT_WEBHOOK_TOKEN`: Token rahasia bersama untuk autentikasi endpoint `/api/webhook/sensor`.
+* *(Opsional)* Jalankan `python user_tools/get_session_cookies.py` jika ingin mengambil *session cookie* X/Threads secara interaktif untuk disimpan ke `.env`.
+
+Sesuaikan parameter anggaran (`max_initiative_budget_usd`), kuota *rate-limit*, dan jadwal `monologue_every_cycles` di dalam `config.yaml`.
+
+### 3. Inisialisasi Dunia Agen (Opsional untuk Isolasi LXC)
+
+Jika Anda menggunakan Linux dan menginginkan isolasi container LXC beserta penyemaian database awal (*Genesis DB Seed*):
+
+```bash
+sudo ./user_tools/create-agent-world.sh --with-antigravity
+
+```
+
+### 4. Menjalankan Agen & Pengujian
+
+Sebelum menjalankan layanan utama, Anda dapat memverifikasi integritas sistem melalui *test suite*:
+
+```bash
+pytest -q
+
+```
+
+**Opsi A — Menjalankan sebagai Layanan Server (FastAPI + Telegram Webhook + Background Scheduler):**
+
+```bash
+uvicorn main:create_production_app --factory --host 0.0.0.0 --port 8000
+
+```
+
+**Opsi B — Berinteraksi Langsung melalui Terminal Lokal (Tanpa Telegram):**
+
+```bash
+python -m scripts.devi_repl
+
+```
+
+### 5. Referensi Perintah Kendali (Telegram & REPL)
+
+Seluruh perintah di bawah ini dieksekusi secara instan tanpa memanggil LLM (**Zero-Token Cost**) dan tetap dapat diakses meskipun agen sedang dalam status *paused*:
+
+| Perintah | Fungsi Operasional |
 | --- | --- |
-| `/status` | Snapshot agent, uptime, anggaran USD, limit provider global (RPM/TPM/RPD/TPD), status tiap API key, pemakaian sisi agent, rasio human/agent, status freetime, alasan pause, dan aktivitas terakhir. Tidak memanggil LLM. |
-| `/budget-ratio` | Menampilkan rasio human/agent, porsi agent untuk tiap limit, dan status freetime. |
-| `/budget-ratio <human> <agent>` | Mengubah rasio, misalnya `/budget-ratio 60 40`. Dua bilangan bulat 0-100 yang jumlahnya 100. Porsi human adalah jatah minimum yang dilindungi; agent dibatasi `agent% × limit`. Disimpan di `system_state` dan bertahan setelah restart. |
-| `/agent-freetime on` | Menonaktifkan budget ratio: inisiatif agent boleh memakai seluruh limit global. Limit global tetap berlaku. |
-| `/agent-freetime off` | Mengaktifkan kembali budget ratio untuk inisiatif agent. |
-| `/agent-freetime status` | Menampilkan status freetime (`on`/`off`). Tanpa argumen sama dengan `status`. |
-| `/pause-agent` | Pause manual: kill switch aktif, semua thread `Active` dipause, misi baru ditolak sampai `/resume-agent`. Pause manual tidak auto-resume. |
-| `/resume-agent` | Membatalkan pause manual maupun pause rate-limit, membuka kembali thread yang dipause. |
-| `/trace <thread_id\|trace_id>` | Menampilkan audit trail per langkah: waktu, trigger, aksi, outcome, latency, biaya, CoT (`why`), kutipan respons, dan lokasi hasil disimpan (`where`). Tidak memanggil LLM. |
-| `/approve [skill]` | Mengaktifkan plugin yang baru dibuat agent lewat `register_new_skill` (menjalankan test-nya lebih dulu). Tanpa argumen: daftar skill yang menunggu persetujuan. |
-| `/reject <skill>` | Membuang kode plugin yang menunggu persetujuan tanpa mengaktifkannya. |
-| `/quit`, `/exit` | Keluar dari REPL lokal (Ctrl-D juga bisa). Hanya tersedia di REPL, bukan Telegram. |
+| `/status` | Menampilkan kondisi agen, *uptime*, temperatur CPU, ruang disk, sisa anggaran USD, kuota RPM/TPM/RPD/TPD, status tiap API key, dan aktivitas terakhir. |
+| `/trace <thread_id|trace_id>` | Membedah jejak audit langkah demi langkah: waktu, pemicu, *Chain-of-Thought* (`why`), aksi/plugin yang dipanggil, latensi, dan biaya. |
+| `/budget-ratio <human> <agent>` | Mengatur persentase kuota *rate-limit* yang boleh digunakan oleh inisiatif mandiri agen (contoh: `/budget-ratio 60 40`). |
+| `/agent-freetime on|off|status` | Mengizinkan atau mencabut hak agen untuk menggunakan 100% batas kuota global saat waktu luang. |
+| `/approve [nama_skill]` | Menjalankan pengujian `pytest` dan mengaktifkan plugin baru yang dibuat agen di folder `.pending_skills/`. Tanpa argumen: melihat daftar antrean. |
+| `/reject <nama_skill>` | Menghapus kode plugin yang diajukan agen dari folder karantina. |
+| `/pause-agent` | Mengaktifkan *Kill Switch* manual, menjeda semua thread aktif, dan menghentikan seluruh panggilan LLM. |
+| `/resume-agent` | Mencabut status *pause* (baik manual maupun akibat *rate-limit*) dan melanjutkan kembali thread yang tertunda. |
 
-### Skill Baru dari Pekerjaan Berulang
+### 6. Utilitas Manajemen Database & Audit
 
-Kalau satu misi butuh lebih dari 3 langkah dan kemungkinan diulang, agent diinstruksikan membungkusnya jadi satu plugin (`register_new_skill`, `action_type='create'`) beserta test-nya, bukan script lepas. Plugin baru **tidak langsung aktif**: kodenya ditahan di `plugins/.pending_skills/` sampai pemilik menjalankan `/approve <nama>`. Setelah disetujui, test dijalankan, plugin didaftarkan ke `plugin_registry` tier `ATELIER`, dan muncul di katalog tool pada misi berikutnya tanpa restart. `upgrade` dan `restore` tetap otonom.
-
-Alasannya: kode plugin berjalan di proses agent dengan akses penuh ke filesystem, DB, dan API key, jadi pembuatan pertama butuh persetujuan manusia.
-
-### Limit Provider & Budget Ratio
-
-`rate_limits` di `config.yaml` mengatur kuota global provider; `0` berarti unlimited:
-
-```yaml
-rate_limits:
-  rpm_limit: 60          # request per menit
-  tpm_limit: 120000      # token per menit
-  rpd_limit: 1000        # request per hari (UTC)
-  tpd_limit: 2000000     # token per hari (UTC)
-  budget_ratio_agent: 0.40   # porsi maksimum inisiatif agent
-  agent_freetime: false
-```
-
-- Setiap percobaan worker dihitung satu request; retry healer ikut dihitung. Token diambil dari `usage` respons provider.
-- Limit global tercapai: semua aktivitas LLM pause (kill switch), chat menerima alasan dan waktu auto-resume.
-- Porsi agent habis: hanya thread `origin='AGENT'` yang pause; chat human tetap jalan. Pause ini bisa dilewati dengan `/agent-freetime on`.
-- Auto-resume RPM/TPM di awal menit berikutnya, RPD/TPD pada 00:00 UTC hari berikutnya. Pause manual `/pause-agent` tetap menunggu `/resume-agent`.
-- `budget_ratio_agent: 0` memblokir semua inisiatif agent (bukan unlimited). Nilai ratio/freetime yang diubah lewat command disimpan di `system_state` dan menimpa `config.yaml` saat startup.
-- Pemakaian menit/hari disimpan di tabel `rate_limit_usage` sehingga bertahan setelah restart; snapshot lama tanpa tabel tersebut tetap bisa direstore.
-
-### Jadwal InnerMonologue
-
-Scheduler berjalan tiap 60 detik. `monologue_every_cycles` menentukan berapa tick sebelum satu siklus InnerMonologue dijalankan; nilai `5` berarti tiap 5 menit. Cek budget, pause, dan wake-up tetap tiap tick.
-
-```yaml
-monologue_every_cycles: 5
-```
-
-### Multi-key Gemini (Failover)
-
-Provider Gemini mencoba key berurutan, key pertama (utama) didahulukan. Secret tetap di `.env`; `config.yaml` hanya menyimpan id, nama env, dan limit per key:
-
-```yaml
-rate_limits:
-  provider: "gemini"     # "gemini" memakai gemini_keys di bawah
-gemini_keys:
-  - id: "primary"
-    env: "GEMINI_API_KEY_PRIMARY"
-    rpm_limit: 15          # 0 = unlimited
-    tpm_limit: 1000000
-    rpd_limit: 1500
-    tpd_limit: 10000000
-  - id: "secondary"
-    env: "GEMINI_API_KEY_SECONDARY"
-    rpm_limit: 15
-    tpm_limit: 1000000
-    rpd_limit: 1500
-    tpd_limit: 10000000
-```
-
-- Limit per key adalah batas utama; `rate_limits` global tetap menjadi batas luar opsional (`0` = unlimited).
-- Failover pada 429, 401/403, 5xx, dan timeout/jaringan. 429 cooldown mengikuti `Retry-After` atau sampai menit berikutnya; 5xx/jaringan 60 detik; 401/403 mematikan key sampai restart.
-- Error request lain (mis. 400) tidak dirotasi: langsung gagal agar bug tidak tersembunyi.
-- Semua key down: satu notifikasi Telegram per episode, balasan misi berisi alasan dan waktu retry otomatis, tanpa kill switch.
-- `/status` menampilkan `ready`, `cooldown until ...`, atau `disabled` per key; key dengan limit lokal habis ikut ditandai.
-- Pemakaian per key disimpan di tabel `provider_key_usage`; cooldown/disabled hanya di memori. Key tanpa secret dilewati saat startup, dan startup gagal bila tidak ada key tersedia.
-- Nama model memakai format native Gemini, mis. `gemini-2.5-flash` (bukan `google/...`).
-
-### PostgreSQL + Backup SQLite
-
-- Set `db_type: "postgres"` di `config.yaml`, lalu isi `POSTGRES_DSN=postgresql+psycopg://...` di `.env`. DSN tidak pernah disimpan di `config.yaml`.
-- Jika PostgreSQL tidak bisa dihubungi saat startup dan `fallback_sqlite: true`, agen berjalan sementara di `fallback_sqlite_path`; health menampilkan `db_backend: "sqlite-fallback"`. Tidak ada hot-failover saat runtime.
-- Backup periodik hanya menyalin baris dengan `is_backup = false` ke satu snapshot SQLite (`backup.sqlite_path`), lalu menandainya sudah dibackup. Timestamp dibuat aplikasi agar urutan tetap deterministik di kedua backend.
-- Batasan v1: penghapusan baris di PostgreSQL tidak menghapus baris di snapshot, jadi restore akan mengembalikan baris yang sudah dihapus. Restore selalu menang; jangan pakai snapshot sebagai pengganti riwayat audit.
-- Restore selalu mengganti seluruh isi PostgreSQL dengan snapshot SQLite (snapshot = sumber kebenaran):
-
+* **Sinkronisasi Snapshot PostgreSQL $\leftrightarrow$ SQLite:**
 ```bash
 python -m scripts.db_sync status
 python -m scripts.db_sync backup
 python -m scripts.db_sync restore --yes
+
 ```
 
-- Database SQLite lama: hentikan agen, lalu jalankan `python user_tools/migrate-is-backup.py --db ./data/devi_subhadra.db` (idempoten, otomatis membuat `.bak`). Untuk skema PostgreSQL lama, pakai `--dsn "$POSTGRES_DSN"` setelah `pg_dump` sendiri.
+
+* **Ekspor & Pembersihan Log Audit ke CSV:**
+```bash
+python user_tools/dump_audit_log.py --db ./data/devi_subhadra.db --out audit_archive.csv
+
+```
+
+
 
 ---
 ![Devi Subhadra landscape](assets/devi_subhadra_landscape_small.jpg)
-*Dibangun dengan dedikasi di bawah filosofi bahwa sistem AI modern tidak seharusnya bertindak hanya sebagai kalkulator yang dipercantik, melainkan sebuah mitra sintetik yang persisten dan terus berproses.*
+
+*Dirancang dan dikembangkan dengan filosofi bahwa kecerdasan buatan modern seharusnya tidak berhenti sebagai kalkulator probabilistik yang pasif, melainkan tumbuh menjadi mitra kognitif yang persisten, terukur, dan transparan.*
+
+

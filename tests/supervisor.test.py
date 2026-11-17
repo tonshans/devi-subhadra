@@ -136,3 +136,32 @@ def test_dlq_reports_terminal_healer_failure():
         assert "ESCALATION" in outcome.heal_result.report
 
     asyncio.run(scenario())
+
+def test_delegate_worker_uses_the_supplied_patch_executor():
+    async def scenario():
+        supervisor = Supervisor(HealerNode(), timeout_seconds=0.01)
+        patched = []
+
+        async def worker():
+            await asyncio.sleep(0.05)
+
+        async def execute_patch(code):
+            patched.append(code)
+            return PluginOutputSchema(success=True, data={})
+
+        async def propose_patch(attempt, error):
+            return HealerPatchProposal(
+                attempt_number=attempt,
+                root_cause_analysis="Apply the supplied patch instead of retrying.",
+                patched_code="print('fixed')",
+                embedded_assertions=["True"],
+            )
+
+        outcome = await supervisor.delegate_worker(
+            worker, propose_patch, execute_patch=execute_patch
+        )
+
+        assert patched == ["print('fixed')"]
+        assert outcome.heal_result.success is True
+
+    asyncio.run(scenario())

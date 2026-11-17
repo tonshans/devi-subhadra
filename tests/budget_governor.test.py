@@ -269,3 +269,13 @@ def test_per_key_usage_persists_across_restart(tmp_path):
     assert restarted.key_used("primary", "rpm") == 2
     assert restarted.key_used("primary", "tpm") == 300
     assert restarted.key_used("secondary", "rpm") == 0
+
+def test_sqlalchemy_store_enables_wal_and_skips_for_update_on_sqlite(tmp_path):
+    from sqlalchemy import text
+
+    store = SqliteBudgetStore(str(tmp_path / "budget.db"))
+    with store._engine.connect() as connection:
+        assert connection.execute(text("PRAGMA journal_mode;")).scalar() == "wal"
+
+    assert store.reserve("2026-01-01", "CORE_70", 1.0, 0.25) is True
+    assert store.spent("2026-01-01", "CORE_70") == pytest.approx(0.25)

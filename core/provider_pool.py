@@ -11,6 +11,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from core.budget_governor import BudgetGovernor
+from core.llm_worker import LastUsageState
 
 COOLDOWN_SECONDS = 60
 DISABLED_STATUSES = {401, 403}
@@ -92,7 +93,7 @@ def _body_delay(response: httpx.Response) -> float | None:
     return None
 
 
-class ProviderPool:
+class ProviderPool(LastUsageState):
     def __init__(
         self,
         keys: list[ProviderKey],
@@ -113,7 +114,7 @@ class ProviderPool:
         self._cooldowns: dict[str, datetime] = {}
         self._disabled: set[str] = set()
         self._down_notified = False
-        self.last_usage: dict | None = None
+        super().__init__()
 
     def _local_limit(self, key: ProviderKey) -> str | None:
         for metric, attr in PER_KEY_METRICS:
