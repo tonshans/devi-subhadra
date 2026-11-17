@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 from plugins.community_pulse import CommunityPulsePlugin
 

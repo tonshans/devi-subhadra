@@ -30,6 +30,6 @@ package = false
 [tool.pytest.ini_options]
 python_files = ["*.test.py", "test_*.py"]
 pythonpath = ["."]
-testpaths = ["."]
+testpaths = ["tests"]
 # Keeps module.test.py from colliding with the sibling module of the same name.
 addopts = ["--import-mode=importlib"]

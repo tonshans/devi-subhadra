@@ -37,7 +37,7 @@ def test_build_gateway_reads_telegram_secrets(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "123")
 
-    gateway = build_gateway(load_config(Path(__file__).with_name("config.yaml")))
+    gateway = build_gateway(load_config(Path(__file__).resolve().parents[1] / "config.yaml"))
 
     assert gateway.is_configured is True
     assert gateway.is_authorized(123) is True
@@ -45,7 +45,7 @@ def test_build_gateway_reads_telegram_secrets(monkeypatch):
 
 
 def test_build_runtime_wires_plugins_worker_and_wake_up(tmp_path):
-    settings = load_config(Path(__file__).with_name("config.yaml"))
+    settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     ledger = CognitiveLedger(tmp_path / "app.db")
     governor = BudgetGovernor(1.00)
 
@@ -82,7 +82,7 @@ def test_build_runtime_requires_gemini_secret_without_worker(
 ):
     monkeypatch.delenv("GEMINI_API_KEY_PRIMARY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY_SECONDARY", raising=False)
-    settings = load_config(Path(__file__).with_name("config.yaml"))
+    settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     gateway = TelegramGateway(
         sender=lambda chat_id, message: None, allowed_chat_id=123
     )
@@ -102,7 +102,7 @@ def test_build_runtime_skips_gemini_keys_without_secret(
 ):
     monkeypatch.setenv("GEMINI_API_KEY_PRIMARY", "key-one")
     monkeypatch.delenv("GEMINI_API_KEY_SECONDARY", raising=False)
-    settings = load_config(Path(__file__).with_name("config.yaml"))
+    settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     ledger = CognitiveLedger(tmp_path / "app.db")
     governor = BudgetGovernor(1.00)
     gateway = TelegramGateway(
@@ -122,7 +122,7 @@ def test_build_runtime_skips_gemini_keys_without_secret(
 
 def test_build_worker_wraps_openrouter_in_a_provider_pool(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-    settings = load_config(Path(__file__).with_name("config.yaml"))
+    settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     settings = settings.model_copy(
         update={
             "rate_limits": settings.rate_limits.model_copy(
@@ -144,7 +144,7 @@ def test_create_production_app_wires_gateway_and_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY_PRIMARY", "key-one")
 
     app = create_production_app(
-        config_path=Path(__file__).with_name("config.yaml")
+        config_path=Path(__file__).resolve().parents[1] / "config.yaml"
     )
 
     assert app.state.gateway.is_configured is True
@@ -277,7 +277,7 @@ def test_telegram_webhook_rejects_unauthorized_chat(tmp_path):
 
 
 def test_import_and_build_app_from_foreign_cwd(tmp_path):
-    repo = Path(__file__).resolve().parent
+    repo = Path(__file__).resolve().parents[1]
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join(

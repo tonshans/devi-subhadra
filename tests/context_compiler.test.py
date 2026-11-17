@@ -2,7 +2,6 @@
 
 import asyncio
 
-import pytest
 
 from core.cognitive_ledger import CognitiveLedger
 from core.context_compiler import EPISTEMIC_WARNING, CompiledContext, ContextCompiler

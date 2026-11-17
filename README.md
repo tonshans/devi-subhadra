@@ -80,6 +80,7 @@ cp .env.example .env   # isi token & API key
 ```
 
 - Wajib: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID`, plus secret provider. `provider: gemini` membaca `GEMINI_API_KEY_PRIMARY` (dan `GEMINI_API_KEY_SECONDARY` bila dikonfigurasi); `provider: openrouter` membaca `OPENROUTER_API_KEY`. Opsional: `AGENT_WEBHOOK_TOKEN`.
+- Semua unit test berada di `tests/` (satu file `<nama_modul>.test.py` per modul); `uv run pytest -q` hanya menjalankan folder itu.
 - Isi `pricing.input_usd_per_million` dan `pricing.output_usd_per_million` di `config.yaml` agar anggaran memotong biaya token nyata. Nilai `0.0` mempertahankan biaya datar `cost_usd`.
 - Kill-switch menjeda semua thread `Active` dan menolak misi baru dengan HTTP 503; `resume()` membuka kembali thread tersebut.
 - `GET /api/health` melaporkan `database`, `db_backend` (`sqlite`/`postgres`/`sqlite-fallback`), `db_fallback`, `kill_switch_active`, `provider`, dan `provider_keys_ready`.

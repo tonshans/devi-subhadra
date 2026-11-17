@@ -16,7 +16,7 @@ from core.db.engine import (
     resolve_postgres_dsn,
 )
 
-_REPO_CONFIG = Path(__file__).resolve().parents[2] / "config.yaml"
+_REPO_CONFIG = Path(__file__).resolve().parents[1] / "config.yaml"
 _DSN = "postgresql+psycopg://user:pass@localhost:5432/devi_subhadra"
 
 
