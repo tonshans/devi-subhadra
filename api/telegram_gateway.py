@@ -11,10 +11,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.cognitive_ledger import KILL_SWITCH_KEY
+from core.commands import dispatch
 from core.runtime import MissionBlockedError
 
 MAX_CHUNK_CHARS = 4000
 SPILLOVER_CHARS = 12000
+MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 
 
 class _TelegramInbound(BaseModel):
@@ -69,9 +71,11 @@ class TelegramGateway:
         cooldown_seconds: float = 60,
         allowed_chat_id: Optional[int] = None,
         clock: Optional[Callable[[], float]] = None,
+        atelier_dir: Optional[str | Path] = None,
     ) -> None:
         self._sender = sender
         self._workspace_dir = Path(workspace_dir)
+        self._atelier_dir = Path(atelier_dir) if atelier_dir else None
         self._cooldown_seconds = cooldown_seconds
         self._allowed_chat_id = allowed_chat_id
         self._clock = clock or time.monotonic
@@ -115,6 +119,41 @@ class TelegramGateway:
             await self._send(chat_id, chunk)
         return SendResult(chunks_sent=len(chunks), saved_to_file=None)
 
+    def _resolve_file(self, path: str | Path) -> Path:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = self._workspace_dir / candidate
+        target = candidate.resolve()
+        roots = [self._workspace_dir.resolve()]
+        if self._atelier_dir is not None:
+            roots.append(self._atelier_dir.resolve())
+        if not any(target.is_relative_to(root) for root in roots):
+            raise ValueError(f"file is outside workspace/atelier: {path}")
+        if not target.is_file():
+            raise ValueError(f"file not found: {path}")
+        if target.stat().st_size > MAX_DOCUMENT_BYTES:
+            raise ValueError(
+                f"file exceeds {MAX_DOCUMENT_BYTES} bytes limit: {path}"
+            )
+        return target
+
+    async def send_file(
+        self, path: str | Path, caption: Optional[str] = None
+    ) -> None:
+        """Send a local file to the configured chat; the agent cannot pick a chat."""
+        if self._allowed_chat_id is None:
+            raise RuntimeError("Telegram chat allowlist is not configured.")
+        send_document = getattr(self._sender, "send_document", None)
+        if send_document is None:
+            raise RuntimeError("No Telegram document sender configured.")
+        await send_document(self._allowed_chat_id, self._resolve_file(path), caption)
+
+    async def notify(self, message: str) -> None:
+        """Push a system notice to the allowlisted chat (no user input needed)."""
+        if self._allowed_chat_id is None:
+            raise RuntimeError("Telegram chat allowlist is not configured.")
+        await self._send(self._allowed_chat_id, message)
+
 
 router = APIRouter(prefix="/api/webhook", tags=["telegram"])
 
@@ -128,8 +167,36 @@ async def telegram_webhook(update: TelegramUpdate, request: Request) -> dict:
     if not gateway.is_configured:
         raise HTTPException(status_code=503, detail="Telegram gateway is not configured")
 
+    # Commands bypass the kill switch so /status and /resume-agent stay reachable.
+    command_context = getattr(request.app.state, "command_context", None)
+    if command_context is not None:
+        reply = await dispatch(update.message.text, command_context)
+        if reply is not None:
+            result = await gateway.send_response(
+                chat_id, reply, response_id=update.message.message_id
+            )
+            return {
+                "status": "accepted",
+                "chunks_sent": result.chunks_sent,
+                "saved_to_file": result.saved_to_file,
+            }
+
     ledger = request.app.state.ledger
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is not None:
+        await runtime.auto_resume()
     if await ledger.get_system_state(KILL_SWITCH_KEY) == "1":
+        # A rate-limit pause must still explain itself; a manual pause stays 503.
+        notice = await runtime.pause_notice() if runtime is not None else None
+        if notice is not None:
+            result = await gateway.send_response(
+                chat_id, notice, response_id=update.message.message_id
+            )
+            return {
+                "status": "accepted",
+                "chunks_sent": result.chunks_sent,
+                "saved_to_file": result.saved_to_file,
+            }
         raise HTTPException(status_code=503, detail="Kill switch is active")
     # Telegram retries on non-2xx; claim first so a retry cannot duplicate a mission.
     if not await ledger.claim_telegram_update(update.update_id):
@@ -140,14 +207,19 @@ async def telegram_webhook(update: TelegramUpdate, request: Request) -> dict:
         thread_id = await ledger.create_thread(
             f"Telegram: {update.message.text[:60]}", "HUMAN"
         )
-        runtime = getattr(request.app.state, "runtime", None)
         if runtime is not None:
             try:
                 reply = await runtime.handle_mission(
                     thread_id, update.message.text, initiator="Telegram"
                 )
-            except MissionBlockedError as exc:
-                raise HTTPException(status_code=503, detail=str(exc))
+            except MissionBlockedError:
+                # Paused mid-flight by a rate limit: say why instead of failing.
+                notice = await runtime.pause_notice()
+                if notice is None:
+                    raise HTTPException(
+                        status_code=503, detail="Kill switch is active"
+                    )
+                reply = notice
         else:
             reply = await request.app.state.responder(update, thread_id)
         result = await gateway.send_response(

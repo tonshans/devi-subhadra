@@ -1,11 +1,12 @@
-"""Meta-tool: generate a plugin in TDD or Fast-Track mode, then register it."""
+"""Full-cycle skill manager: create, upgrade, restore, with TDD rollback."""
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import Field
 
@@ -15,37 +16,92 @@ from core.schemas import PluginOutputSchema, StrictBaseModel
 
 
 class SkillInput(StrictBaseModel):
-    skill_name: str = Field(..., pattern=r"^[a-z][a-z0-9_]*$")
-    description: str = Field(..., min_length=5)
-    source: str = Field(..., min_length=1)
-    test_source: Optional[str] = None
-    mode: Literal["TDD", "FAST_TRACK"] = "TDD"
+    action_type: Literal["create", "restore", "upgrade"] = Field(
+        ..., description="create tool baru, upgrade yang ada, atau restore dari arsip."
+    )
+    plugin_name: str = Field(..., pattern=r"^[a-z][a-z0-9_]*$")
+    new_code: Optional[str] = Field(
+        default=None, description="Wajib untuk create/upgrade."
+    )
+    new_test_code: Optional[str] = Field(
+        default=None, description="Wajib untuk create/upgrade."
+    )
 
 
 class RegisterNewSkill(BaseAgentPlugin):
     plugin_name = "register_new_skill"
-    description = "Create a new plugin; TDD mode blocks registration when tests fail."
+    description = (
+        "Skill manager: create/upgrade dengan TDD (rollback saat gagal) atau "
+        "restore plugin Atelier dari folder arsip."
+    )
     input_schema = SkillInput
+    # Staged `create` payloads live here; the loader ignores dotted dirs.
+    PENDING_DIR = ".pending_skills"
 
     def __init__(
         self,
         plugins_dir: str | Path | None = None,
         test_runner: Optional[Callable[[Path], bool]] = None,
         approver: Optional[Callable[[str, str], bool]] = None,
+        archived_dir: str | Path | None = None,
+        ledger: Any | None = None,
+        require_approval: bool = True,
     ) -> None:
         self._plugins_dir = Path(plugins_dir or "plugins")
+        self._archived_dir = Path(archived_dir) if archived_dir else None
         self._test_runner = test_runner
-        # shortcut: no approver means no human gate; wire one before production.
+        # In-process gate; without it, `create` is staged for /approve instead.
         self._approver = approver
+        self._ledger = ledger
+        self._require_approval = require_approval
 
-    def initialize(self, config: dict) -> bool:
+    def initialize(self, config: dict[str, Any]) -> bool:
         if config.get("plugins_dir"):
             self._plugins_dir = Path(config["plugins_dir"])
+        if "require_approval" in config:
+            self._require_approval = bool(config["require_approval"])
+        paths = config.get("paths", config)
+        archived = config.get("archived_plugins_dir")
+        if archived:
+            self._archived_dir = Path(archived)
+        elif paths.get("atelier_dir"):
+            self._archived_dir = Path(paths["atelier_dir"]) / "archived_plugins"
+        if config.get("ledger") is not None:
+            self._ledger = config["ledger"]
         return True
 
+    def shutdown(self) -> None:
+        return None
+
+    @staticmethod
+    def _failure(message: str) -> PluginOutputSchema:
+        return PluginOutputSchema(success=False, data={}, error_message=message)
+
+    def _plugin_path(self, name: str) -> Path:
+        return self._plugins_dir / f"{name}.py"
+
+    def _test_path(self, name: str) -> Path:
+        return self._plugins_dir / f"{name}.test.py"
+
+    def _archived_plugin(self, name: str) -> Path | None:
+        return self._archived_dir / f"{name}.py" if self._archived_dir else None
+
+    def _archived_test(self, name: str) -> Path | None:
+        return self._archived_dir / f"{name}.test.py" if self._archived_dir else None
+
     def _default_runner(self, test_path: Path) -> bool:
+        # importlib mode keeps `x.test.py` importable outside the repo rootdir.
         completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", str(test_path)],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--import-mode=importlib",
+                "-p",
+                "no:cacheprovider",
+                str(test_path),
+            ],
             capture_output=True,
             text=True,
             cwd=Path.cwd(),
@@ -53,72 +109,206 @@ class RegisterNewSkill(BaseAgentPlugin):
         return completed.returncode == 0
 
     @staticmethod
-    def _cleanup(*paths: Path) -> None:
-        for path in paths:
+    def _restore_file(path: Path, content: str | None) -> None:
+        if content is None:
             path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
 
-    def execute(self, payload: dict) -> PluginOutputSchema:
-        request = SkillInput.model_validate(payload)
-        if request.mode == "TDD" and not request.test_source:
-            return PluginOutputSchema(
-                success=False,
-                data={},
-                error_message="TDD mode requires test_source.",
+    def _rollback(
+        self,
+        plugin_path: Path,
+        test_path: Path,
+        plugin_source: str | None,
+        test_source: str | None,
+    ) -> None:
+        self._restore_file(plugin_path, plugin_source)
+        self._restore_file(test_path, test_source)
+
+    def _register(self, plugin: BaseAgentPlugin) -> str | None:
+        if self._ledger is None:
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            return (
+                "cannot update the plugin registry from inside a running event "
+                "loop; let the runtime register it"
             )
+        try:
+            asyncio.run(
+                self._ledger.register_plugin(
+                    plugin.plugin_name, "ATELIER", plugin.description
+                )
+            )
+        except Exception as exc:
+            return str(exc)
+        return None
+
+    def _discard_archive(self, name: str) -> None:
+        for path in (self._archived_plugin(name), self._archived_test(name)):
+            if path is not None and path.is_file():
+                path.unlink()
+
+    def execute(self, payload: dict[str, Any]) -> PluginOutputSchema:
+        request = self.input_schema.model_validate(payload)
+        if request.action_type == "restore":
+            return self._restore(request)
+        return self._create_or_upgrade(request)
+
+    def _stage(self, request: SkillInput) -> PluginOutputSchema:
+        """Hold new code until a human runs /approve; nothing active yet."""
+        staging = self._plugins_dir / self.PENDING_DIR
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
+            code_path = staging / f"{request.plugin_name}.py"
+            code_path.write_text(request.new_code or "", encoding="utf-8")
+            (staging / f"{request.plugin_name}.test.py").write_text(
+                request.new_test_code or "", encoding="utf-8"
+            )
+        except OSError as exc:
+            return self._failure(f"Could not stage plugin: {exc}")
+        return PluginOutputSchema(
+            success=False,
+            data={
+                "pending_approval": True,
+                "plugin_name": request.plugin_name,
+                "path": str(code_path),
+            },
+            error_message=(
+                f"Plugin '{request.plugin_name}' is staged for human approval; "
+                "nothing is active yet. Ask the owner to run "
+                f"/approve {request.plugin_name} or /reject {request.plugin_name}."
+            ),
+        )
+
+    def _create_or_upgrade(self, request: SkillInput) -> PluginOutputSchema:
+        if not request.new_code or not request.new_test_code:
+            return self._failure(
+                f"{request.action_type} requires new_code and new_test_code."
+            )
+
+        plugin_path = self._plugin_path(request.plugin_name)
+        test_path = self._test_path(request.plugin_name)
+        archived_plugin = self._archived_plugin(request.plugin_name)
+        archived_test = self._archived_test(request.plugin_name)
+        archived_exists = archived_plugin is not None and archived_plugin.is_file()
+
+        if request.action_type == "create" and plugin_path.exists():
+            return self._failure(
+                f"{request.plugin_name} already exists; use action_type='upgrade'."
+            )
+        if request.action_type == "upgrade" and not plugin_path.exists() and not archived_exists:
+            return self._failure(
+                f"{request.plugin_name} is neither active nor archived; use 'create'."
+            )
+
+        if request.action_type == "create" and self._require_approval:
+            return self._stage(request)
+
+        if plugin_path.exists():
+            plugin_source = plugin_path.read_text(encoding="utf-8")
+        elif archived_exists:
+            plugin_source = archived_plugin.read_text(encoding="utf-8")
+        else:
+            plugin_source = None
+        if test_path.exists():
+            test_source = test_path.read_text(encoding="utf-8")
+        elif archived_test is not None and archived_test.is_file():
+            test_source = archived_test.read_text(encoding="utf-8")
+        else:
+            test_source = None
 
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
-        plugin_path = self._plugins_dir / f"{request.skill_name}.py"
-        test_path = self._plugins_dir / f"{request.skill_name}.test.py"
+        plugin_path.write_text(request.new_code, encoding="utf-8")
+        test_path.write_text(request.new_test_code, encoding="utf-8")
 
-        plugin_path.write_text(request.source, encoding="utf-8")
-        if request.mode == "TDD":
-            test_path.write_text(request.test_source, encoding="utf-8")
-            try:
-                passed = bool((self._test_runner or self._default_runner)(test_path))
-            except Exception as exc:
-                self._cleanup(plugin_path, test_path)
-                return PluginOutputSchema(
-                    success=False,
-                    data={},
-                    error_message=f"Test runner failed: {exc}",
-                )
-            if not passed:
-                self._cleanup(plugin_path, test_path)
-                return PluginOutputSchema(
-                    success=False,
-                    data={},
-                    error_message="Unit tests failed; plugin not registered.",
-                )
+        try:
+            passed = bool((self._test_runner or self._default_runner)(test_path))
+        except Exception as exc:
+            self._rollback(plugin_path, test_path, plugin_source, test_source)
+            return self._failure(f"Test runner failed: {exc}")
+        if not passed:
+            self._rollback(plugin_path, test_path, plugin_source, test_source)
+            return self._failure("Unit tests failed; changes rolled back.")
+
+        loaded = PluginLoader(self._plugins_dir).load_plugin(request.plugin_name)
+        if loaded is None:
+            self._rollback(plugin_path, test_path, plugin_source, test_source)
+            return self._failure("Plugin rejected after tests; changes rolled back.")
 
         if self._approver is not None and not self._approver(
-            request.skill_name, request.source
+            request.plugin_name, request.new_code
         ):
-            self._cleanup(plugin_path, test_path)
-            return PluginOutputSchema(
-                success=False,
-                data={},
-                error_message="Human approval was not granted; plugin not registered.",
-            )
+            self._rollback(plugin_path, test_path, plugin_source, test_source)
+            return self._failure("Human approval was not granted; changes rolled back.")
 
-        loader = PluginLoader(self._plugins_dir)
-        loaded = loader.load_all()
-        if request.skill_name not in loaded:
-            self._cleanup(plugin_path, test_path)
-            details = "; ".join(loader.errors.values()) or "not a valid BaseAgentPlugin"
-            return PluginOutputSchema(
-                success=False,
-                data={},
-                error_message=f"Plugin rejected: {details}",
-            )
+        error = self._register(loaded)
+        if error is not None:
+            self._rollback(plugin_path, test_path, plugin_source, test_source)
+            return self._failure(f"Registry update failed: {error}")
 
+        self._discard_archive(request.plugin_name)
         return PluginOutputSchema(
             success=True,
             data={
-                "plugin_name": request.skill_name,
+                "action_type": request.action_type,
+                "plugin_name": request.plugin_name,
                 "path": str(plugin_path),
-                "tests_passed": request.mode == "TDD",
+                "tests_passed": True,
+                "description": loaded.description,
+                "registered_in_ledger": self._ledger is not None,
             },
         )
 
-    def shutdown(self) -> None:
-        return None
+    def _restore(self, request: SkillInput) -> PluginOutputSchema:
+        plugin_path = self._plugin_path(request.plugin_name)
+        test_path = self._test_path(request.plugin_name)
+        archived_plugin = self._archived_plugin(request.plugin_name)
+        archived_test = self._archived_test(request.plugin_name)
+
+        if plugin_path.exists():
+            return self._failure(
+                f"{request.plugin_name} is already active; use action_type='upgrade'."
+            )
+        if archived_plugin is None or not archived_plugin.is_file():
+            return self._failure(
+                f"{request.plugin_name}.py not found in the archive."
+            )
+
+        self._plugins_dir.mkdir(parents=True, exist_ok=True)
+        plugin_path.write_text(
+            archived_plugin.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        if archived_test is not None and archived_test.is_file():
+            test_path.write_text(
+                archived_test.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+        loaded = PluginLoader(self._plugins_dir).load_plugin(request.plugin_name)
+        if loaded is None:
+            plugin_path.unlink(missing_ok=True)
+            test_path.unlink(missing_ok=True)
+            return self._failure("Archived plugin is invalid; restore aborted.")
+
+        error = self._register(loaded)
+        if error is not None:
+            plugin_path.unlink(missing_ok=True)
+            test_path.unlink(missing_ok=True)
+            return self._failure(f"Registry update failed: {error}")
+
+        self._discard_archive(request.plugin_name)
+        return PluginOutputSchema(
+            success=True,
+            data={
+                "action_type": "restore",
+                "plugin_name": request.plugin_name,
+                "path": str(plugin_path),
+                "tests_passed": False,
+                "description": loaded.description,
+                "registered_in_ledger": self._ledger is not None,
+            },
+        )

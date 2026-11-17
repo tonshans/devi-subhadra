@@ -1,0 +1,373 @@
+"""Slash commands shared by the Telegram gateway and the local REPL.
+
+Add a command by decorating an async handler in this module:
+
+    @command("/hello", "Say hello.")
+    async def hello(ctx: CommandContext, args: str) -> str:
+        return "hello"
+
+It becomes available on every surface that calls `dispatch`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from core.budget_governor import BudgetGovernor
+from core.cognitive_ledger import (
+    AGENT_FREETIME_KEY,
+    AGENT_PAUSE_REASON_KEY,
+    AGENT_PAUSE_UNTIL_KEY,
+    BUDGET_RATIO_KEY,
+    KILL_SWITCH_KEY,
+    PAUSE_REASON_KEY,
+    PAUSE_UNTIL_KEY,
+    CognitiveLedger,
+)
+from core.config_loader import AppConfig
+from core.halt import halt_message, resolve_halt_dir
+from core.sysinfo import cpu_temp_line, disk_space_line
+
+Handler = Callable[["CommandContext", str], Awaitable[str]]
+
+_PLUGINS_DIR = Path(__file__).resolve().parents[1] / "plugins"
+_PENDING_DIR = ".pending_skills"
+_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+@dataclass
+class CommandContext:
+    ledger: CognitiveLedger
+    governor: BudgetGovernor
+    settings: AppConfig
+    started_at: float = field(default_factory=time.monotonic)
+    # Optional provider pool (exposes status_lines) so /status shows each key.
+    provider: Any | None = None
+    plugins_dir: Path = _PLUGINS_DIR
+
+
+@dataclass(frozen=True)
+class _Command:
+    help_text: str
+    handler: Handler
+
+
+_REGISTRY: dict[str, _Command] = {}
+
+
+def command(name: str, help_text: str):
+    def register(handler: Handler) -> Handler:
+        _REGISTRY[name] = _Command(help_text, handler)
+        return handler
+
+    return register
+
+
+def available_commands() -> list[str]:
+    return sorted(_REGISTRY)
+
+
+async def dispatch(text: str, ctx: CommandContext) -> str | None:
+    """Run a slash command; None means the text is a normal chat message."""
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    name, _, args = stripped.partition(" ")
+    # Telegram groups address bots as /status@bot_name.
+    name = name.split("@", 1)[0]
+    entry = _REGISTRY.get(name)
+    if entry is None:
+        return f"Unknown command: {name}. Available: {', '.join(available_commands())}"
+    return await entry.handler(ctx, args.strip())
+
+
+def _uptime(seconds: float) -> str:
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}h {minutes:02d}m {secs:02d}s"
+
+
+def _used_limit(used: int, limit: int) -> str:
+    return f"{used}/unlimited" if limit == 0 else f"{used}/{limit}"
+
+
+def _agent_usage(governor: BudgetGovernor, metric: str) -> str:
+    cap = governor.agent_cap(metric)
+    used = governor.used(metric, "AGENT")
+    return f"{used}/unlimited" if cap is None else f"{used}/{cap}"
+
+
+def _until_text(value: str | None) -> str:
+    if value and value.endswith("Z"):
+        return value[:-1].replace("T", " ") + " UTC"
+    return value or "unknown"
+
+
+async def load_governor_overrides(
+    ledger: CognitiveLedger, governor: BudgetGovernor
+) -> None:
+    """Apply /budget-ratio and /agent-freetime overrides saved in system_state."""
+    ratio = await ledger.get_system_state(BUDGET_RATIO_KEY)
+    if ratio:
+        try:
+            governor.set_budget_ratio_agent(float(ratio))
+        except ValueError:
+            pass
+    freetime = await ledger.get_system_state(AGENT_FREETIME_KEY)
+    if freetime in {"0", "1"}:
+        governor.set_agent_freetime(freetime == "1")
+
+
+@command("/status", "Agent, budget, limit, and activity snapshot (no LLM calls).")
+async def status(ctx: CommandContext, _args: str) -> str:
+    settings = ctx.settings
+    governor = ctx.governor
+    logs = await ctx.ledger.list_activity_logs(limit=1)
+    last = logs[0] if logs else None
+    active_threads = await ctx.ledger.list_threads(status="Active")
+    paused = await ctx.ledger.get_system_state(KILL_SWITCH_KEY) == "1"
+    pause_reason = await ctx.ledger.get_system_state(PAUSE_REASON_KEY)
+    pause_until = await ctx.ledger.get_system_state(PAUSE_UNTIL_KEY)
+    agent_pause = await ctx.ledger.get_system_state(AGENT_PAUSE_REASON_KEY)
+    agent_pause_until = await ctx.ledger.get_system_state(AGENT_PAUSE_UNTIL_KEY)
+
+    state = "paused" if paused else "running"
+    if paused and pause_reason and pause_reason != "manual":
+        state += f" ({pause_reason}) until {_until_text(pause_until)}"
+
+    core_quota = settings.budget.max_initiative_budget_usd * settings.budget.core_task_ratio
+    atelier_quota = (
+        settings.budget.max_initiative_budget_usd * settings.budget.atelier_ratio
+    )
+    agent_ratio = governor.budget_ratio_agent
+    human_pct = round((1 - agent_ratio) * 100)
+    agent_pct = round(agent_ratio * 100)
+    freetime = (
+        "on (agent may use the full global limit)"
+        if governor.agent_freetime
+        else "off"
+    )
+    halt = halt_message(settings.halt_dir, settings.paths.workspace_dir)
+    halt_dir = resolve_halt_dir(settings.halt_dir, settings.paths.workspace_dir)
+    lines = [
+        f"agent: {settings.agent_name}",
+        f"state: {state}",
+        f"halt: {halt or f'none ({halt_dir})'}",
+        disk_space_line(settings.paths.workspace_dir),
+        cpu_temp_line(),
+        f"uptime: {_uptime(time.monotonic() - ctx.started_at)}",
+        f"db: {ctx.ledger.dialect}",
+        f"model: {settings.models.tier_2_heavy} "
+        f"(light: {settings.models.tier_1_light})",
+        f"context: {last['tokens_used'] if last else 0}/"
+        f"{settings.rate_limits.max_context_tokens} tokens (last mission)",
+        f"budget: core ${governor.remaining_usd('CORE_70'):.4f} left of "
+        f"${core_quota:.2f}; atelier "
+        f"${governor.remaining_usd('ATELIER_30'):.4f} left of "
+        f"${atelier_quota:.2f}",
+        f"rate limit: rpm {_used_limit(governor.used('rpm'), governor.limit('rpm'))}"
+        f" | tpm {_used_limit(governor.used('tpm'), governor.limit('tpm'))}",
+        f"            rpd {_used_limit(governor.used('rpd'), governor.limit('rpd'))}"
+        f" | tpd {_used_limit(governor.used('tpd'), governor.limit('tpd'))}",
+        f"agent share: rpm {_agent_usage(governor, 'rpm')}"
+        f" | tpm {_agent_usage(governor, 'tpm')}",
+        f"             rpd {_agent_usage(governor, 'rpd')}"
+        f" | tpd {_agent_usage(governor, 'tpd')}",
+        f"budget ratio: human {human_pct}% (reserved minimum) | "
+        f"agent {agent_pct}%",
+        f"agent freetime: {freetime}",
+    ]
+    if ctx.provider is not None:
+        lines.extend(ctx.provider.status_lines())
+    if agent_pause:
+        lines.append(
+            f"agent state: paused ({agent_pause}) until "
+            f"{_until_text(agent_pause_until)}"
+        )
+    lines.extend(
+        [
+            f"threads: {len(active_threads)} active",
+            f"last activity: {last['created_at'] if last else 'none'}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+@command("/budget-ratio", "Show or set the agent share of provider limits.")
+async def budget_ratio(ctx: CommandContext, args: str) -> str:
+    parts = args.split()
+    if parts:
+        if len(parts) != 2:
+            return "Usage: /budget-ratio <human> <agent> (whole numbers summing to 100)"
+        try:
+            human, agent = int(parts[0]), int(parts[1])
+        except ValueError:
+            return "Usage: /budget-ratio <human> <agent> (whole numbers summing to 100)"
+        if human < 0 or agent < 0 or human + agent != 100:
+            return "Human and agent must be 0-100 and sum to 100."
+        ratio = agent / 100
+        ctx.governor.set_budget_ratio_agent(ratio)
+        await ctx.ledger.set_system_state(BUDGET_RATIO_KEY, str(ratio))
+        return (
+            f"Budget ratio set: human {human}% (reserved minimum) | "
+            f"agent {agent}%. Agent share applies to RPM, TPM, RPD, and TPD."
+        )
+
+    governor = ctx.governor
+    agent_ratio = governor.budget_ratio_agent
+    return "\n".join(
+        [
+            f"budget ratio: human {round((1 - agent_ratio) * 100)}% "
+            f"(reserved minimum) | agent {round(agent_ratio * 100)}%",
+            f"agent share: rpm {_agent_usage(governor, 'rpm')}"
+            f" | tpm {_agent_usage(governor, 'tpm')}",
+            f"             rpd {_agent_usage(governor, 'rpd')}"
+            f" | tpd {_agent_usage(governor, 'tpd')}",
+            f"agent freetime: {'on' if governor.agent_freetime else 'off'}",
+        ]
+    )
+
+
+@command("/agent-freetime", "Let agent initiatives use the full global limit.")
+async def agent_freetime(ctx: CommandContext, args: str) -> str:
+    action = args.strip().lower()
+    if action in {"", "status"}:
+        return f"agent freetime: {'on' if ctx.governor.agent_freetime else 'off'}"
+    if action not in {"on", "off"}:
+        return "Usage: /agent-freetime on|off|status"
+    enabled = action == "on"
+    ctx.governor.set_agent_freetime(enabled)
+    await ctx.ledger.set_system_state(AGENT_FREETIME_KEY, "1" if enabled else "0")
+    if enabled:
+        return (
+            "Agent freetime on: initiatives may use the full RPM/TPM/RPD/TPD "
+            "limits (global limits still apply)."
+        )
+    return "Agent freetime off: the budget ratio applies to agent initiatives again."
+
+
+@command("/pause-agent", "Stop all agent activity and LLM calls.")
+async def pause_agent(ctx: CommandContext, _args: str) -> str:
+    # Flag first so no new mission slips in while threads are paused.
+    await ctx.ledger.set_system_state(KILL_SWITCH_KEY, "1")
+    await ctx.ledger.set_system_state(PAUSE_REASON_KEY, "manual")
+    await ctx.ledger.set_system_state(PAUSE_UNTIL_KEY, "")
+    paused = await ctx.ledger.pause_active_threads()
+    return f"Agent paused ({paused} active thread(s) paused)."
+
+
+@command("/trace", "Audit trail for a thread or trace id (no LLM calls).")
+async def trace(ctx: CommandContext, args: str) -> str:
+    key = args.strip()
+    if not key:
+        return "usage: /trace <thread_id|trace_id>"
+    rows = await ctx.ledger.list_audit_logs(key)
+    if not rows:
+        return f"no audit rows for {key} (audit disabled or unknown id)"
+    lines = [f"audit trail: {key} ({len(rows)} step(s))"]
+    for row in rows:
+        latency = row["latency_ms"] or 0
+        cost = row["cost_usd"] or 0.0
+        head = (
+            f"{row['created_at']} step {row['step']} "
+            f"{row['trigger']}/{row['action']} {row['outcome']} "
+            f"{latency}ms ${cost:.4f}"
+        )
+        if row["action_target"]:
+            head += f" target={row['action_target']}"
+        lines.append(head)
+        if row["cot"]:
+            lines.append(f"  why: {row['cot']}")
+        if row["response"]:
+            lines.append(f"  out: {row['response'][:200]}")
+        if row["error"]:
+            lines.append(f"  err: {row['error']}")
+        if row["result_table"]:
+            lines.append(f"  where: {row['result_table']}/{row['result_id']}")
+    return "\n".join(lines)
+
+
+@command("/resume-agent", "Resume agent activity and LLM calls.")
+async def resume_agent(ctx: CommandContext, _args: str) -> str:
+    # Flag first: new missions are allowed once the queue is reopened.
+    await ctx.ledger.set_system_state(KILL_SWITCH_KEY, "0")
+    await ctx.ledger.set_system_state(PAUSE_REASON_KEY, "")
+    await ctx.ledger.set_system_state(PAUSE_UNTIL_KEY, "")
+    await ctx.ledger.set_system_state(AGENT_PAUSE_REASON_KEY, "")
+    await ctx.ledger.set_system_state(AGENT_PAUSE_UNTIL_KEY, "")
+    resumed = await ctx.ledger.unpause_threads()
+    return f"Agent resumed ({resumed} thread(s) reopened)."
+
+
+@command("/approve", "Activate a skill staged by register_new_skill (runs its tests).")
+async def approve_skill(ctx: CommandContext, args: str) -> str:
+    name = args.strip()
+    if not name:
+        pending = _pending_skills(ctx)
+        if not pending:
+            return "No staged skills waiting for approval."
+        return "staged skills: " + ", ".join(pending) + " (use /approve <name>)"
+    if not _PLUGIN_NAME.fullmatch(name):
+        return f"invalid skill name: {name}"
+    staging = ctx.plugins_dir / _PENDING_DIR
+    code = staging / f"{name}.py"
+    test = staging / f"{name}.test.py"
+    if not code.is_file() or not test.is_file():
+        return f"no staged skill named {name}"
+
+    # Local import: plugins import core, so importing here avoids a cycle.
+    from plugins.register_new_skill import RegisterNewSkill
+
+    manager = RegisterNewSkill(
+        plugins_dir=ctx.plugins_dir,
+        archived_dir=Path(ctx.settings.paths.atelier_dir) / "archived_plugins",
+        require_approval=False,
+    )
+    payload = {
+        "action_type": "create",
+        "plugin_name": name,
+        "new_code": code.read_text(encoding="utf-8"),
+        "new_test_code": test.read_text(encoding="utf-8"),
+    }
+    # execute() runs pytest; keep it off the event loop.
+    result = await asyncio.to_thread(manager.execute, payload)
+    if not result.success:
+        return f"skill {name} not activated: {result.error_message}"
+    # The manager runs ledger-free here; register on the main loop instead of
+    # asyncio.run() on ctx.ledger from a worker thread.
+    await ctx.ledger.register_plugin(
+        name, "ATELIER", result.data.get("description") or name
+    )
+    code.unlink(missing_ok=True)
+    test.unlink(missing_ok=True)
+    return f"skill {name} is active and registered; it shows up in the tool catalog."
+
+
+@command("/reject", "Discard a staged skill without activating it.")
+async def reject_skill(ctx: CommandContext, args: str) -> str:
+    name = args.strip()
+    if not _PLUGIN_NAME.fullmatch(name):
+        return "usage: /reject <skill_name>"
+    staging = ctx.plugins_dir / _PENDING_DIR
+    removed = 0
+    for path in (staging / f"{name}.py", staging / f"{name}.test.py"):
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    if removed == 0:
+        return f"no staged skill named {name}"
+    return f"staged skill {name} discarded ({removed} file(s))."
+
+
+def _pending_skills(ctx: CommandContext) -> list[str]:
+    staging = ctx.plugins_dir / _PENDING_DIR
+    if not staging.is_dir():
+        return []
+    return sorted(
+        path.stem for path in staging.glob("*.py") if not path.name.endswith(".test.py")
+    )

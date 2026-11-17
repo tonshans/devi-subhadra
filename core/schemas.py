@@ -55,3 +55,13 @@ class DiscoveryRecord(StrictBaseModel):
     content_summary: str = Field(..., min_length=10)
     source_url: str = Field(..., pattern=r"^https?://.+")
     relevance_to_user: str = Field(..., min_length=5)
+
+
+class MissionReply(StrictBaseModel):
+    reply: str = Field(..., min_length=1)
+    files: List[str] = Field(default_factory=list, max_length=5)
+    # Tool request: the runtime runs the plugin, then asks the model again.
+    plugin: Optional[str] = None
+    plugin_payload: Optional[Dict[str, Any]] = None
+    # Why the model chose this action; stored as CoT in audit_logs.
+    reasoning: str = ""

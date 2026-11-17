@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from sqlalchemy import text
 
 from core.cognitive_ledger import CognitiveLedger
 
@@ -450,5 +451,351 @@ def test_system_state_roundtrip_survives_new_connection(tmp_path):
 
         await reopened.set_system_state("kill_switch", "0")
         assert await ledger.get_system_state("kill_switch") == "0"
+
+    asyncio.run(scenario())
+
+def test_is_vectorized_defaults_false_and_mark_vectorized_updates_once(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        entry_id = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="Remember me later.",
+        )
+        discovery_id = await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Something useful.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Improves scripts.",
+        )
+
+        assert not (await ledger.read("ledger_entries", entry_id))["is_vectorized"]
+        assert not (await ledger.read("atelier_discoveries", discovery_id))[
+            "is_vectorized"
+        ]
+        assert await ledger.count_vectorized() == 0
+
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 1
+        assert await ledger.mark_vectorized("atelier_discoveries", [discovery_id]) == 1
+        assert await ledger.count_vectorized() == 2
+
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 0
+        with pytest.raises(ValueError):
+            await ledger.mark_vectorized("ledger_threads", [thread_id])
+
+    asyncio.run(scenario())
+
+
+def test_initialize_adds_is_vectorized_to_a_legacy_sqlite_file(tmp_path):
+    import sqlite3
+
+    async def scenario():
+        path = tmp_path / "ledger.db"
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            """
+            CREATE TABLE ledger_entries (
+                entry_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                content TEXT NOT NULL,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                is_backup BOOLEAN NOT NULL DEFAULT 0
+            );
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Legacy thread", "HUMAN")
+        entry_id = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="Added after migration.",
+        )
+
+        assert not (await ledger.read("ledger_entries", entry_id))["is_vectorized"]
+        assert await ledger.mark_vectorized("ledger_entries", [entry_id]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_list_pending_vector_entries_filters_by_age_and_thread_status(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        completed = await ledger.create(
+            "ledger_threads",
+            title="Completed",
+            status="Completed",
+            origin="HUMAN",
+            priority_score=100,
+        )
+        archived = await ledger.create(
+            "ledger_threads",
+            title="Archived",
+            status="Archived",
+            origin="HUMAN",
+            priority_score=100,
+        )
+        active = await ledger.create_thread("Active", "HUMAN")
+        cutoff = "2026-10-15 00:00:00"
+
+        pending = [
+            await ledger.create(
+                "ledger_entries",
+                thread_id=thread_id,
+                tag="FAKTA",
+                content=f"old-{thread_id[:4]}",
+                created_at="2026-09-01 00:00:00",
+            )
+            for thread_id in (completed, archived)
+        ]
+        await ledger.create(
+            "ledger_entries",
+            thread_id=active,
+            tag="FAKTA",
+            content="old but active",
+            created_at="2026-09-01 00:00:00",
+        )
+        await ledger.create(
+            "ledger_entries",
+            thread_id=completed,
+            tag="FAKTA",
+            content="recent",
+            created_at="2026-11-10 00:00:00",
+        )
+
+        rows = await ledger.list_pending_vector_entries(cutoff)
+
+        assert [row["entry_id"] for row in rows] == sorted(pending)
+
+    asyncio.run(scenario())
+
+
+def test_list_pending_vector_discoveries_filters_by_age(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        old = await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Old discovery.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Useful.",
+            extracted_at="2026-10-01 00:00:00",
+        )
+        await ledger.create(
+            "atelier_discoveries",
+            topic_category="PYTHON",
+            content_summary="Fresh discovery.",
+            source_url="https://docs.python.org/3/",
+            relevance_to_user="Useful.",
+            extracted_at="2026-11-13 00:00:00",
+        )
+
+        rows = await ledger.list_pending_vector_discoveries(
+            "2026-11-10 00:00:00"
+        )
+
+        assert [row["discovery_id"] for row in rows] == [old]
+
+    asyncio.run(scenario())
+
+
+def test_list_ledger_entries_can_exclude_vectorized_rows(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Thread A", "HUMAN")
+        keep = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="short-term",
+        )
+        stored = await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="FAKTA",
+            content="long-term",
+        )
+        await ledger.mark_vectorized("ledger_entries", [stored])
+
+        rows = await ledger.list_ledger_entries(
+            thread_id, only_unvectorized=True
+        )
+
+        assert [row["entry_id"] for row in rows] == [keep]
+
+    asyncio.run(scenario())
+
+
+def test_register_plugin_upserts_without_resetting_last_used_at(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("echo", "ATELIER", "Echo the payload.")
+        await ledger.update("plugin_registry", "echo", last_used_at="2020-01-01 00:00:00")
+
+        await ledger.register_plugin("echo", "ATELIER", "Echo v2.")
+
+        row = await ledger.read("plugin_registry", "echo")
+        assert row["description_summary"] == "Echo v2."
+        assert row["last_used_at"] == "2020-01-01 00:00:00"
+
+        with pytest.raises(ValueError):
+            await ledger.register_plugin("bad", "TIER3", "nope")
+
+    asyncio.run(scenario())
+
+
+def test_log_plugin_usage_updates_known_plugin_only(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("echo", "ATELIER", "Echo the payload.")
+        await ledger.update("plugin_registry", "echo", last_used_at="2020-01-01 00:00:00")
+
+        assert await ledger.log_plugin_usage("echo") is True
+        row = await ledger.read("plugin_registry", "echo")
+        assert row["last_used_at"] > "2020-01-01 00:00:00"
+
+        assert await ledger.log_plugin_usage("ghost") is False
+        assert await ledger.read("plugin_registry", "ghost") is None
+
+    asyncio.run(scenario())
+
+
+def test_list_plugins_filters_tier_and_archived(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("file_manager", "CORE", "Files.")
+        await ledger.register_plugin("echo", "ATELIER", "Echo.")
+        await ledger.register_plugin("old_tool", "ATELIER", "Old.")
+        await ledger.set_plugin_archived("old_tool", True)
+
+        active = await ledger.list_plugins()
+        assert [row["plugin_name"] for row in active] == ["echo", "file_manager"]
+
+        atelier = await ledger.list_plugins("ATELIER")
+        assert [row["plugin_name"] for row in atelier] == ["echo"]
+
+        everything = await ledger.list_plugins(include_archived=True)
+        assert {row["plugin_name"] for row in everything} == {
+            "echo",
+            "file_manager",
+            "old_tool",
+        }
+
+        assert await ledger.set_plugin_archived("ghost", True) is False
+
+    asyncio.run(scenario())
+
+
+def test_list_stale_plugins_returns_only_old_active_atelier_rows(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        await ledger.register_plugin("stale", "ATELIER", "Stale.")
+        await ledger.register_plugin("fresh", "ATELIER", "Fresh.")
+        await ledger.register_plugin("core_stale", "CORE", "Core.")
+        await ledger.register_plugin("archived_stale", "ATELIER", "Archived.")
+        for name in ("stale", "core_stale", "archived_stale"):
+            await ledger.update(
+                "plugin_registry", name, last_used_at="2026-10-01 00:00:00"
+            )
+        await ledger.set_plugin_archived("archived_stale", True)
+
+        rows = await ledger.list_stale_plugins("2026-10-17 00:00:00")
+
+        assert [row["plugin_name"] for row in rows] == ["stale"]
+
+    asyncio.run(scenario())
+
+
+def test_record_thread_attempt_and_status_transitions(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+
+        assert await ledger.record_thread_attempt(thread_id) is True
+        row = await ledger.read("ledger_threads", thread_id)
+        assert row["attempt_count"] == 1
+        assert row["last_attempt_at"] is not None
+
+        assert await ledger.set_thread_status(thread_id, "Completed") is True
+        assert (await ledger.read("ledger_threads", thread_id))["status"] == "Completed"
+        with pytest.raises(ValueError):
+            await ledger.set_thread_status(thread_id, "Bogus")
+
+    asyncio.run(scenario())
+
+
+def test_get_next_active_thread_skips_threads_still_in_cooldown(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Cooling down", "HUMAN")
+        await ledger.record_thread_attempt(thread_id)
+
+        assert (
+            await ledger.get_next_active_thread(ready_before="2000-01-01 00:00:00.000000")
+            is None
+        )
+        assert await ledger.get_next_active_thread(origin="AGENT") is None
+        assert (
+            await ledger.get_next_active_thread(ready_before=None)
+        )["thread_id"] == thread_id
+
+    asyncio.run(scenario())
+
+
+def test_initialize_closes_legacy_active_threads_once(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Legacy", "HUMAN")
+        # Pretend the cutover marker is missing: a pre-upgrade database.
+        async with ledger._engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM system_state WHERE key = 'resume_cutover_v1'")
+            )
+
+        await ledger.initialize()
+
+        assert (
+            await ledger.read("ledger_threads", thread_id)
+        )["status"] == "Completed"
+        reopened = await ledger.create_thread("New", "HUMAN")
+        await ledger.initialize()
+        assert (
+            await ledger.read("ledger_threads", reopened)
+        )["status"] == "Active"
+
+    asyncio.run(scenario())
+
+
+def test_list_audit_logs_filters_by_trace_or_thread_in_step_order(tmp_path):
+    async def scenario():
+        ledger = await _new_ledger(tmp_path)
+        thread_id = await ledger.create_thread("Mission A", "HUMAN")
+        for trace, step in (("trace-1", 1), ("trace-1", 2), ("trace-2", 1)):
+            await ledger.create(
+                "audit_logs",
+                trace_id=trace,
+                step=step,
+                thread_id=thread_id,
+                trigger="TELEGRAM",
+                origin="HUMAN",
+                action="LLM_REPLY",
+                outcome="SUCCESS",
+            )
+
+        trace_rows = await ledger.list_audit_logs("trace-1")
+        assert [row["step"] for row in trace_rows] == [1, 2]
+
+        thread_rows = await ledger.list_audit_logs(thread_id)
+        assert len(thread_rows) == 3
+        assert await ledger.list_audit_logs("unknown") == []
 
     asyncio.run(scenario())

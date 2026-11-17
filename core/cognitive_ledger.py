@@ -1,28 +1,40 @@
-"""Async SQL state manager for the 7 core tables, SQLite WAL, and FTS5 search."""
+"""Async SQL state manager: portable Core schema, FTS, and backup flags."""
 
 from __future__ import annotations
 
 import re
 import uuid
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-import aiosqlite
+from sqlalchemy import delete, event, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from core.db.dialects import create_search_objects, ensure_sqlite_columns
+from core.db.schema import metadata
+from core.db.timestamps import utc_now_text
 
 _FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 
 
 def sanitize_fts_query(query: str) -> str | None:
     """Turn raw user text into quoted FTS5 phrase terms; None means empty."""
-    tokens = [
+    tokens = fts_terms(query)
+    if not tokens:
+        return None
+    return " ".join(f'"{token}"' for token in tokens)
+
+
+def fts_terms(query: str) -> list[str]:
+    return [
         token
         for token in re.findall(r"\w+", query, flags=re.UNICODE)
         if token.upper() not in _FTS_OPERATORS
     ]
-    if not tokens:
-        return None
-    return " ".join(f'"{token}"' for token in tokens)
+
 
 _TABLES = {
     "core_directives": (
@@ -39,6 +51,15 @@ _TABLES = {
             "is_archived",
         },
     ),
+    "plugin_registry": (
+        "plugin_name",
+        {
+            "tier_type",
+            "description_summary",
+            "last_used_at",
+            "is_archived",
+        },
+    ),
     "ledger_threads": (
         "thread_id",
         {
@@ -49,11 +70,21 @@ _TABLES = {
             "is_human_endorsed",
             "expected_output",
             "created_at",
+            "attempt_count",
+            "last_attempt_at",
         },
     ),
     "ledger_entries": (
         "entry_id",
-        {"thread_id", "tag", "content", "token_count", "is_archived", "created_at"},
+        {
+            "thread_id",
+            "tag",
+            "content",
+            "token_count",
+            "is_archived",
+            "created_at",
+            "is_vectorized",
+        },
     ),
     "atelier_discoveries": (
         "discovery_id",
@@ -63,6 +94,7 @@ _TABLES = {
             "source_url",
             "relevance_to_user",
             "extracted_at",
+            "is_vectorized",
         },
     ),
     "activity_logs": (
@@ -74,6 +106,33 @@ _TABLES = {
             "reasoning",
             "budget_bucket",
             "tokens_used",
+            "cost_usd",
+            "created_at",
+        },
+    ),
+    "audit_logs": (
+        "audit_id",
+        {
+            "trace_id",
+            "step",
+            "thread_id",
+            "trigger",
+            "trigger_ref",
+            "origin",
+            "model",
+            "prompt",
+            "prompt_tokens",
+            "cot",
+            "action",
+            "action_target",
+            "action_payload",
+            "response",
+            "response_tokens",
+            "outcome",
+            "error",
+            "result_table",
+            "result_id",
+            "latency_ms",
             "cost_usd",
             "created_at",
         },
@@ -90,173 +149,60 @@ _TABLES = {
     ),
 }
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS core_directives (
-    directive_id TEXT PRIMARY KEY,
-    directive_type TEXT NOT NULL CHECK(directive_type IN ('VISION', 'IMMUTABLE_PERSONA', 'SYSTEM_ANATOMY')),
-    content TEXT NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS semantic_memory (
-    rule_id TEXT PRIMARY KEY,
-    category TEXT NOT NULL CHECK(category IN ('KOMUNIKASI', 'TEKNIS', 'PREFERENSI_USER')),
-    heuristic_text TEXT NOT NULL,
-    confidence_score INTEGER NOT NULL DEFAULT 50 CHECK(confidence_score >= 0 AND confidence_score <= 100),
-    last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_archived INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS ledger_threads (
-    thread_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('Active', 'Paused', 'Completed', 'Archived')),
-    origin TEXT NOT NULL CHECK(origin IN ('HUMAN', 'AGENT')),
-    priority_score INTEGER NOT NULL,
-    is_human_endorsed INTEGER NOT NULL DEFAULT 0,
-    expected_output TEXT DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS ledger_entries (
-    entry_id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL REFERENCES ledger_threads(thread_id) ON DELETE CASCADE,
-    tag TEXT NOT NULL CHECK(tag IN ('FAKTA', 'TINDAKAN', 'PEMIKIRAN')),
-    content TEXT NOT NULL,
-    token_count INTEGER NOT NULL DEFAULT 0,
-    is_archived INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS ledger_entries_fts USING fts5(
-    entry_id UNINDEXED,
-    content
-);
-
-CREATE TRIGGER IF NOT EXISTS ledger_entries_ai AFTER INSERT ON ledger_entries BEGIN
-    INSERT INTO ledger_entries_fts(entry_id, content) VALUES (new.entry_id, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_entries_ad AFTER DELETE ON ledger_entries BEGIN
-    DELETE FROM ledger_entries_fts WHERE entry_id = old.entry_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_entries_au AFTER UPDATE OF content ON ledger_entries BEGIN
-    UPDATE ledger_entries_fts SET content = new.content WHERE entry_id = old.entry_id;
-END;
-
-CREATE TABLE IF NOT EXISTS atelier_discoveries (
-    discovery_id TEXT PRIMARY KEY,
-    topic_category TEXT NOT NULL,
-    content_summary TEXT NOT NULL,
-    source_url TEXT NOT NULL,
-    relevance_to_user TEXT NOT NULL,
-    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS atelier_discoveries_fts USING fts5(
-    discovery_id UNINDEXED,
-    topic_category,
-    content_summary,
-    relevance_to_user
-);
-
-CREATE TRIGGER IF NOT EXISTS atelier_discoveries_ai AFTER INSERT ON atelier_discoveries BEGIN
-    INSERT INTO atelier_discoveries_fts(discovery_id, topic_category, content_summary, relevance_to_user)
-    VALUES (new.discovery_id, new.topic_category, new.content_summary, new.relevance_to_user);
-END;
-
-CREATE TRIGGER IF NOT EXISTS atelier_discoveries_ad AFTER DELETE ON atelier_discoveries BEGIN
-    DELETE FROM atelier_discoveries_fts WHERE discovery_id = old.discovery_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS atelier_discoveries_au
-AFTER UPDATE OF topic_category, content_summary, relevance_to_user ON atelier_discoveries BEGIN
-    UPDATE atelier_discoveries_fts
-    SET topic_category = new.topic_category,
-        content_summary = new.content_summary,
-        relevance_to_user = new.relevance_to_user
-    WHERE discovery_id = old.discovery_id;
-END;
-
-CREATE TABLE IF NOT EXISTS activity_logs (
-    log_id TEXT PRIMARY KEY,
-    thread_id TEXT NULL REFERENCES ledger_threads(thread_id),
-    source TEXT NOT NULL CHECK(source IN ('HUMAN', 'AGENT')),
-    initiator TEXT NOT NULL CHECK(initiator IN ('Telegram', 'Inner_Monologue', 'Healer_Node', 'Sleep_Mode', 'Webhook')),
-    reasoning TEXT NOT NULL,
-    budget_bucket TEXT NOT NULL CHECK(budget_bucket IN ('CORE_70', 'ATELIER_30', 'HUMAN_EXEMPT')),
-    tokens_used INTEGER NOT NULL DEFAULT 0,
-    cost_usd REAL NOT NULL DEFAULT 0.0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS api_usage_metrics (
-    metric_id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL,
-    model_name TEXT NOT NULL,
-    window_minute TEXT NOT NULL,
-    requests_count INTEGER NOT NULL DEFAULT 0,
-    tokens_count INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS system_state (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Retained newest N seen update ids; older rows are pruned on claim.
-CREATE TABLE IF NOT EXISTS processed_updates (
-    update_id INTEGER PRIMARY KEY,
-    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
 KILL_SWITCH_KEY = "kill_switch"
+RESUME_CUTOVER_KEY = "resume_cutover_v1"
+PAUSE_REASON_KEY = "pause_reason"
+PAUSE_UNTIL_KEY = "pause_until"
+AGENT_PAUSE_REASON_KEY = "agent_pause_reason"
+AGENT_PAUSE_UNTIL_KEY = "agent_pause_until"
+BUDGET_RATIO_KEY = "budget_ratio_agent"
+AGENT_FREETIME_KEY = "agent_freetime"
 PROCESSED_UPDATES_RETENTION = 1000
 
 
+def _sqlite_async_url(db_path: str | Path) -> str:
+    return f"sqlite+aiosqlite:///{Path(db_path).resolve()}"
+
+
 class CognitiveLedger:
-    def __init__(self, db_path: str | Path) -> None:
-        self._db_path = str(db_path)
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        engine: AsyncEngine | None = None,
+    ) -> None:
+        if engine is None:
+            if db_path is None:
+                raise ValueError("database path or engine is required")
+            engine = create_async_engine(
+                _sqlite_async_url(db_path), poolclass=NullPool
+            )
+        self._engine = engine
         self.processed_update_retention = PROCESSED_UPDATES_RETENTION
+        if engine.dialect.name == "sqlite":
 
-    @asynccontextmanager
-    async def _connect(self):
-        connection = await aiosqlite.connect(self._db_path)
-        connection.row_factory = aiosqlite.Row
-        await connection.execute("PRAGMA foreign_keys=ON;")
-        await connection.execute("PRAGMA busy_timeout=5000;")
-        try:
-            yield connection
-        finally:
-            await connection.close()
+            @event.listens_for(engine.sync_engine, "connect")
+            def _sqlite_pragmas(dbapi_connection, _record) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON;")
+                cursor.execute("PRAGMA busy_timeout=5000;")
+                cursor.close()
 
-    async def initialize(self) -> None:
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        connection = await aiosqlite.connect(self._db_path)
-        try:
-            await (await connection.execute("PRAGMA journal_mode=WAL;")).fetchone()
-            await connection.execute("PRAGMA synchronous=NORMAL;")
-            await connection.executescript(_SCHEMA)
-            await connection.commit()
-        finally:
-            await connection.close()
+    @property
+    def engine(self) -> AsyncEngine:
+        return self._engine
 
-    async def ping(self) -> bool:
-        try:
-            async with self._connect() as connection:
-                await (await connection.execute("SELECT 1")).fetchone()
-            return True
-        except Exception:
-            return False
+    @property
+    def dialect(self) -> str:
+        return self._engine.dialect.name
 
-    async def get_journal_mode(self) -> str:
-        async with self._connect() as connection:
-            cursor = await connection.execute("PRAGMA journal_mode;")
-            row = await cursor.fetchone()
-            return row[0].lower()
+    def _table(self, name: str):
+        return metadata.tables[name]
+
+    def _insert(self, table_name: str):
+        if self.dialect == "sqlite":
+            return sqlite_insert(self._table(table_name))
+        return pg_insert(self._table(table_name))
 
     def _check(self, table: str, fields, allow_primary_key: bool = False) -> str:
         if table not in _TABLES:
@@ -270,49 +216,111 @@ class CognitiveLedger:
             raise ValueError(f"cannot write primary key {primary_key} directly")
         return primary_key
 
+    async def initialize(self) -> None:
+        if self.dialect == "sqlite":
+            path = self._engine.url.database
+            if path:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+            async with self._engine.connect() as connection:
+                await connection.execute(text("PRAGMA journal_mode=WAL;"))
+                await connection.execute(text("PRAGMA synchronous=NORMAL;"))
+                await connection.commit()
+        async with self._engine.begin() as connection:
+            await connection.run_sync(metadata.create_all)
+            await ensure_sqlite_columns(connection)
+            await create_search_objects(connection)
+            await self._apply_resume_cutover(connection)
+
+    async def _apply_resume_cutover(self, connection) -> None:
+        """Legacy Active threads were never resumable; close them once."""
+        state = self._table("system_state")
+        seen = await connection.execute(
+            select(state.c.value).where(state.c.key == RESUME_CUTOVER_KEY)
+        )
+        if seen.scalar() is not None:
+            return
+        await connection.execute(
+            update(self._table("ledger_threads"))
+            .where(self._table("ledger_threads").c.status == "Active")
+            .values(status="Completed", is_backup=False)
+        )
+        await connection.execute(
+            self._insert("system_state").values(
+                key=RESUME_CUTOVER_KEY,
+                value=utc_now_text(),
+                updated_at=utc_now_text(),
+                # Local bookkeeping only: never export it as new snapshot data.
+                is_backup=True,
+            )
+        )
+
+    async def dispose(self) -> None:
+        await self._engine.dispose()
+
+    async def ping(self) -> bool:
+        try:
+            async with self._engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+            return True
+        except Exception:
+            return False
+
+    async def get_journal_mode(self) -> str:
+        if self.dialect != "sqlite":
+            return self.dialect
+        async with self._engine.connect() as connection:
+            row = await connection.execute(text("PRAGMA journal_mode;"))
+            return str(row.scalar()).lower()
+
     async def create(self, table: str, **fields) -> str:
         primary_key = self._check(table, fields)
-        fields = {primary_key: str(uuid.uuid4()), **fields}
-        columns = ", ".join(fields)
-        placeholders = ", ".join("?" for _ in fields)
-        async with self._connect() as connection:
-            await connection.execute(
-                f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-                tuple(fields.values()),
-            )
-            await connection.commit()
-        return fields[primary_key]
+        values = {primary_key: str(uuid.uuid4()), **fields, "is_backup": False}
+        await self._ensure_timestamp(table, values)
+        async with self._engine.begin() as connection:
+            await connection.execute(self._table(table).insert().values(**values))
+        return values[primary_key]
+
+    async def _ensure_timestamp(self, table: str, values: dict) -> None:
+        columns = self._table(table).c
+        for name in ("created_at", "last_used_at", "updated_at", "extracted_at"):
+            if name in columns and name not in values:
+                values[name] = utc_now_text()
 
     async def read(self, table: str, record_id: str) -> dict | None:
         primary_key = self._check(table, {})
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"SELECT * FROM {table} WHERE {primary_key} = ?", (record_id,)
+        async with self._engine.connect() as connection:
+            row = await connection.execute(
+                select(self._table(table)).where(
+                    self._table(table).c[primary_key] == record_id
+                )
             )
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+            found = row.mappings().first()
+            return dict(found) if found else None
 
     async def update(self, table: str, record_id: str, **fields) -> bool:
         if not fields:
             raise ValueError("update requires at least one column")
         primary_key = self._check(table, fields)
-        assignments = ", ".join(f"{column} = ?" for column in fields)
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"UPDATE {table} SET {assignments} WHERE {primary_key} = ?",
-                (*fields.values(), record_id),
+        values = dict(fields)
+        if "is_backup" in self._table(table).c:
+            values["is_backup"] = False
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(self._table(table))
+                .where(self._table(table).c[primary_key] == record_id)
+                .values(**values)
             )
-            await connection.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     async def delete(self, table: str, record_id: str) -> bool:
         primary_key = self._check(table, {})
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"DELETE FROM {table} WHERE {primary_key} = ?", (record_id,)
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                delete(self._table(table)).where(
+                    self._table(table).c[primary_key] == record_id
+                )
             )
-            await connection.commit()
-            return cursor.rowcount > 0
+            return result.rowcount > 0
 
     async def create_thread(
         self,
@@ -335,18 +343,55 @@ class CognitiveLedger:
             priority_score=priority_score,
         )
 
-    async def get_next_active_thread(self) -> dict | None:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                SELECT * FROM ledger_threads
-                WHERE status = 'Active'
-                ORDER BY priority_score DESC, created_at ASC, rowid ASC
-                LIMIT 1
-                """
+    async def get_next_active_thread(
+        self, origin: str | None = None, ready_before: str | None = None
+    ) -> dict | None:
+        table = self._table("ledger_threads")
+        statement = select(table).where(table.c.status == "Active")
+        if origin is not None:
+            statement = statement.where(table.c.origin == origin)
+        if ready_before is not None:
+            # Only threads with a finished attempt are crash candidates; a
+            # thread without one is either in flight or never started.
+            statement = statement.where(
+                table.c.last_attempt_at.is_not(None),
+                table.c.last_attempt_at <= ready_before,
             )
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+        statement = statement.order_by(
+            table.c.priority_score.desc(),
+            table.c.created_at.asc(),
+            table.c.thread_id.asc(),
+        ).limit(1)
+        async with self._engine.connect() as connection:
+            row = await connection.execute(statement)
+            found = row.mappings().first()
+            return dict(found) if found else None
+
+    async def record_thread_attempt(self, thread_id: str) -> bool:
+        table = self._table("ledger_threads")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.thread_id == thread_id)
+                .values(
+                    attempt_count=table.c.attempt_count + 1,
+                    last_attempt_at=utc_now_text(),
+                    is_backup=False,
+                )
+            )
+            return result.rowcount > 0
+
+    async def set_thread_status(self, thread_id: str, status: str) -> bool:
+        if status not in {"Active", "Paused", "Completed", "Archived"}:
+            raise ValueError(f"invalid thread status: {status}")
+        table = self._table("ledger_threads")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.thread_id == thread_id)
+                .values(status=status, is_backup=False)
+            )
+            return result.rowcount > 0
 
     async def endorse_thread(
         self,
@@ -354,218 +399,415 @@ class CognitiveLedger:
         priority_score: int = 150,
         expected_output: str | None = None,
     ) -> dict | None:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                UPDATE ledger_threads
-                SET is_human_endorsed = 1, priority_score = ?, expected_output = ?
-                WHERE thread_id = ?
-                """,
-                (priority_score, expected_output, thread_id),
-            )
-            await connection.commit()
-            if cursor.rowcount == 0:
-                return None
-            row = await (
-                await connection.execute(
-                    "SELECT * FROM ledger_threads WHERE thread_id = ?", (thread_id,)
+        table = self._table("ledger_threads")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.thread_id == thread_id)
+                .values(
+                    is_human_endorsed=1,
+                    priority_score=priority_score,
+                    expected_output=expected_output,
+                    is_backup=False,
                 )
-            ).fetchone()
-            return dict(row)
+            )
+        return await self.read("ledger_threads", thread_id) if result.rowcount else None
 
     async def search_ledger_entries(self, query: str) -> list[dict]:
         match = sanitize_fts_query(query)
         if match is None:
             return []
-        async with self._connect() as connection:
-            cursor = await connection.execute(
+        if self.dialect == "sqlite":
+            statement = text(
                 """
                 SELECT e.* FROM ledger_entries e
                 JOIN ledger_entries_fts f ON f.entry_id = e.entry_id
-                WHERE ledger_entries_fts MATCH ?
-                ORDER BY e.created_at DESC
-                """,
-                (match,),
+                WHERE ledger_entries_fts MATCH :match
+                ORDER BY e.created_at DESC, e.entry_id DESC
+                """
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            params = {"match": match}
+        else:
+            statement = text(
+                """
+                SELECT e.* FROM ledger_entries e
+                WHERE e.content_tsv @@ plainto_tsquery('simple', :match)
+                ORDER BY e.created_at DESC, e.entry_id DESC
+                """
+            )
+            params = {"match": " ".join(fts_terms(query))}
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement, params)
+            return [dict(row) for row in rows.mappings().all()]
 
     async def search_discoveries(self, query: str) -> list[dict]:
         match = sanitize_fts_query(query)
         if match is None:
             return []
-        async with self._connect() as connection:
-            cursor = await connection.execute(
+        if self.dialect == "sqlite":
+            statement = text(
                 """
                 SELECT d.* FROM atelier_discoveries d
                 JOIN atelier_discoveries_fts f ON f.discovery_id = d.discovery_id
-                WHERE atelier_discoveries_fts MATCH ?
-                ORDER BY d.extracted_at DESC
-                """,
-                (match,),
-            )
-            return [dict(row) for row in await cursor.fetchall()]
-
-    async def list_core_directives(self) -> list[dict]:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                "SELECT * FROM core_directives ORDER BY updated_at ASC, rowid ASC"
-            )
-            return [dict(row) for row in await cursor.fetchall()]
-
-    async def list_semantic_memories(self, include_archived: bool = False) -> list[dict]:
-        clause = "" if include_archived else "WHERE is_archived = 0"
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"""
-                SELECT * FROM semantic_memory
-                {clause}
-                ORDER BY confidence_score DESC, rowid ASC
+                WHERE atelier_discoveries_fts MATCH :match
+                ORDER BY d.extracted_at DESC, d.discovery_id DESC
                 """
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            params = {"match": match}
+        else:
+            statement = text(
+                """
+                SELECT d.* FROM atelier_discoveries d
+                WHERE d.search_tsv @@ plainto_tsquery('simple', :match)
+                ORDER BY d.extracted_at DESC, d.discovery_id DESC
+                """
+            )
+            params = {"match": " ".join(fts_terms(query))}
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement, params)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_core_directives(self) -> list[dict]:
+        table = self._table("core_directives")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table).order_by(
+                    table.c.updated_at.asc(), table.c.directive_id.asc()
+                )
+            )
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_semantic_memories(self, include_archived: bool = False) -> list[dict]:
+        table = self._table("semantic_memory")
+        statement = select(table)
+        if not include_archived:
+            statement = statement.where(table.c.is_archived == 0)
+        statement = statement.order_by(
+            table.c.confidence_score.desc(), table.c.rule_id.asc()
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def register_plugin(
+        self, plugin_name: str, tier_type: str, description_summary: str
+    ) -> None:
+        """Upsert a discovered plugin; usage history is preserved on conflict."""
+        if tier_type not in {"CORE", "ATELIER"}:
+            raise ValueError(f"invalid tier_type: {tier_type}")
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                self._insert("plugin_registry")
+                .values(
+                    plugin_name=plugin_name,
+                    tier_type=tier_type,
+                    description_summary=description_summary,
+                    last_used_at=utc_now_text(),
+                    is_archived=0,
+                    is_backup=False,
+                )
+                .on_conflict_do_update(
+                    index_elements=[table.c.plugin_name],
+                    set_={
+                        "tier_type": tier_type,
+                        "description_summary": description_summary,
+                        "is_archived": 0,
+                        "is_backup": False,
+                    },
+                )
+            )
+
+    async def log_plugin_usage(self, plugin_name: str) -> bool:
+        """Stamp last_used_at; False means the plugin was never registered."""
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.plugin_name == plugin_name)
+                .values(last_used_at=utc_now_text(), is_backup=False)
+            )
+            return result.rowcount > 0
+
+    async def list_plugins(
+        self, tier_type: str | None = None, include_archived: bool = False
+    ) -> list[dict]:
+        table = self._table("plugin_registry")
+        statement = select(table)
+        if tier_type is not None:
+            statement = statement.where(table.c.tier_type == tier_type)
+        if not include_archived:
+            statement = statement.where(table.c.is_archived == 0)
+        statement = statement.order_by(table.c.plugin_name.asc())
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_stale_plugins(self, cutoff: str) -> list[dict]:
+        """Active ATELIER plugins untouched before `cutoff` (UTC text)."""
+        table = self._table("plugin_registry")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table).where(
+                    table.c.tier_type == "ATELIER",
+                    table.c.is_archived == 0,
+                    table.c.last_used_at < cutoff,
+                )
+            )
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def set_plugin_archived(
+        self, plugin_name: str, archived: bool = True
+    ) -> bool:
+        table = self._table("plugin_registry")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(table)
+                .where(table.c.plugin_name == plugin_name)
+                .values(is_archived=1 if archived else 0, is_backup=False)
+            )
+            return result.rowcount > 0
 
     async def list_ledger_entries(
         self,
         thread_id: str,
         limit: int = 20,
         tags: tuple[str, ...] | None = None,
+        only_unvectorized: bool = False,
     ) -> list[dict]:
         """Last `limit` entries for a thread, returned in chronological order."""
         if tags:
             unknown = set(tags) - {"FAKTA", "TINDAKAN", "PEMIKIRAN"}
             if unknown:
                 raise ValueError(f"unknown entry tags: {sorted(unknown)}")
-        clause = ""
-        params: list = [thread_id]
+        table = self._table("ledger_entries")
+        statement = select(table).where(table.c.thread_id == thread_id)
+        if only_unvectorized:
+            statement = statement.where(table.c.is_vectorized.is_(False))
         if tags:
-            clause = f" AND tag IN ({', '.join('?' for _ in tags)})"
-            params.extend(tags)
-        params.append(limit)
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"""
-                SELECT * FROM ledger_entries
-                WHERE thread_id = ?{clause}
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                tuple(params),
-            )
-            rows = [dict(row) for row in await cursor.fetchall()]
-            rows.reverse()
-            return rows
+            statement = statement.where(table.c.tag.in_(tags))
+        statement = (
+            statement.order_by(table.c.created_at.desc(), table.c.entry_id.desc())
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            rows = [dict(row) for row in (await connection.execute(statement)).mappings()]
+        rows.reverse()
+        return rows
 
-    async def list_oldest_ledger_entries(self, thread_id: str, limit: int = 20) -> list[dict]:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                SELECT * FROM ledger_entries
-                WHERE thread_id = ?
-                ORDER BY created_at ASC, rowid ASC
-                LIMIT ?
-                """,
-                (thread_id, limit),
+    async def list_oldest_ledger_entries(
+        self, thread_id: str, limit: int = 20
+    ) -> list[dict]:
+        table = self._table("ledger_entries")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table)
+                .where(table.c.thread_id == thread_id)
+                .order_by(table.c.created_at.asc(), table.c.entry_id.asc())
+                .limit(limit)
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [dict(row) for row in rows.mappings().all()]
 
-    async def list_ledger_entries_since(self, thread_id: str, since: datetime) -> list[dict]:
+    async def list_ledger_entries_since(
+        self, thread_id: str, since: datetime
+    ) -> list[dict]:
         cutoff = since
         if cutoff.tzinfo is not None:
             cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                SELECT * FROM ledger_entries
-                WHERE thread_id = ? AND created_at >= ?
-                ORDER BY created_at ASC, rowid ASC
-                """,
-                (thread_id, cutoff.strftime("%Y-%m-%d %H:%M:%S")),
+        table = self._table("ledger_entries")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table)
+                .where(
+                    table.c.thread_id == thread_id,
+                    table.c.created_at >= cutoff.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                .order_by(table.c.created_at.asc(), table.c.entry_id.asc())
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_pending_vector_entries(
+        self, older_than: str, limit: int = 500
+    ) -> list[dict]:
+        """Old entries whose parent thread is finished and that lack a vector."""
+        entries = self._table("ledger_entries")
+        threads = self._table("ledger_threads")
+        statement = (
+            select(entries)
+            .join(threads, entries.c.thread_id == threads.c.thread_id)
+            .where(
+                entries.c.is_vectorized.is_(False),
+                entries.c.created_at < older_than,
+                threads.c.status.in_(("Completed", "Archived")),
+            )
+            .order_by(entries.c.created_at.asc(), entries.c.entry_id.asc())
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def list_pending_vector_discoveries(
+        self, older_than: str, limit: int = 500
+    ) -> list[dict]:
+        table = self._table("atelier_discoveries")
+        statement = (
+            select(table)
+            .where(
+                table.c.is_vectorized.is_(False),
+                table.c.extracted_at < older_than,
+            )
+            .order_by(table.c.extracted_at.asc(), table.c.discovery_id.asc())
+            .limit(limit)
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
+
+    async def mark_vectorized(self, table: str, ids: list[str]) -> int:
+        if table not in {"ledger_entries", "atelier_discoveries"}:
+            raise ValueError(f"table is not vectorized: {table}")
+        if not ids:
+            return 0
+        target = self._table(table)
+        primary_key = next(iter(target.primary_key.columns)).name
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                update(target)
+                .where(
+                    target.c[primary_key].in_(ids),
+                    target.c.is_vectorized.is_(False),
+                )
+                .values(is_vectorized=True)
+            )
+            return result.rowcount
+
+    async def count_vectorized(self) -> int:
+        total = 0
+        async with self._engine.connect() as connection:
+            for name in ("ledger_entries", "atelier_discoveries"):
+                table = self._table(name)
+                row = await connection.execute(
+                    select(func.count())
+                    .select_from(table)
+                    .where(table.c.is_vectorized.is_(True))
+                )
+                total += int(row.scalar() or 0)
+        return total
+
+    async def reset_vectorized_flags(self) -> int:
+        """Re-embed everything: Chroma lost its index but SQL still says embedded."""
+        total = 0
+        async with self._engine.begin() as connection:
+            for name in ("ledger_entries", "atelier_discoveries"):
+                table = self._table(name)
+                result = await connection.execute(
+                    update(table)
+                    .where(table.c.is_vectorized.is_(True))
+                    .values(is_vectorized=False, is_backup=False)
+                )
+                total += result.rowcount
+        return total
 
     async def list_threads(self, status: str | None = None) -> list[dict]:
-        clause = "" if status is None else "WHERE status = ?"
-        params: tuple = () if status is None else (status,)
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                f"""
-                SELECT * FROM ledger_threads
-                {clause}
-                ORDER BY priority_score DESC, created_at ASC, rowid ASC
-                """,
-                params,
-            )
-            return [dict(row) for row in await cursor.fetchall()]
+        table = self._table("ledger_threads")
+        statement = select(table)
+        if status is not None:
+            statement = statement.where(table.c.status == status)
+        statement = statement.order_by(
+            table.c.priority_score.desc(),
+            table.c.created_at.asc(),
+            table.c.thread_id.asc(),
+        )
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(statement)
+            return [dict(row) for row in rows.mappings().all()]
 
     async def list_activity_logs(self, limit: int = 50) -> list[dict]:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                SELECT * FROM activity_logs
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                (limit,),
+        table = self._table("activity_logs")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table)
+                .order_by(table.c.created_at.desc(), table.c.log_id.desc())
+                .limit(limit)
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [dict(row) for row in rows.mappings().all()]
 
-    async def pause_active_threads(self) -> int:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                "UPDATE ledger_threads SET status = 'Paused' WHERE status = 'Active'"
+    async def list_audit_logs(self, key: str, limit: int = 200) -> list[dict]:
+        """Audit rows for one trace id or thread id, oldest first."""
+        table = self._table("audit_logs")
+        async with self._engine.connect() as connection:
+            rows = await connection.execute(
+                select(table)
+                .where(or_(table.c.trace_id == key, table.c.thread_id == key))
+                .order_by(table.c.created_at.asc(), table.c.step.asc())
+                .limit(limit)
             )
-            await connection.commit()
-            return cursor.rowcount
+            return [dict(row) for row in rows.mappings().all()]
 
-    async def unpause_threads(self) -> int:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                "UPDATE ledger_threads SET status = 'Active' WHERE status = 'Paused'"
+    async def pause_active_threads(self, origin: str | None = None) -> int:
+        table = self._table("ledger_threads")
+        statement = update(table).where(table.c.status == "Active")
+        if origin is not None:
+            statement = statement.where(table.c.origin == origin)
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                statement.values(status="Paused", is_backup=False)
             )
-            await connection.commit()
-            return cursor.rowcount
+            return result.rowcount
+
+    async def unpause_threads(self, origin: str | None = None) -> int:
+        table = self._table("ledger_threads")
+        statement = update(table).where(table.c.status == "Paused")
+        if origin is not None:
+            statement = statement.where(table.c.origin == origin)
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                statement.values(status="Active", is_backup=False)
+            )
+            return result.rowcount
 
     async def replace_oldest_entries(
         self, thread_id: str, limit: int, summary: str, token_count: int
     ) -> bool:
         """Insert the summary and delete the oldest entries in one transaction."""
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                SELECT entry_id FROM ledger_entries
-                WHERE thread_id = ?
-                ORDER BY created_at ASC, rowid ASC
-                LIMIT ?
-                """,
-                (thread_id, limit),
+        table = self._table("ledger_entries")
+        async with self._engine.begin() as connection:
+            rows = await connection.execute(
+                select(table.c.entry_id)
+                .where(table.c.thread_id == thread_id)
+                .order_by(table.c.created_at.asc(), table.c.entry_id.asc())
+                .limit(limit)
             )
-            entry_ids = [row["entry_id"] for row in await cursor.fetchall()]
+            entry_ids = [row[0] for row in rows.fetchall()]
             if not entry_ids:
                 return False
             await connection.execute(
-                """
-                INSERT INTO ledger_entries
-                    (entry_id, thread_id, tag, content, token_count)
-                VALUES (?, ?, 'FAKTA', ?, ?)
-                """,
-                (str(uuid.uuid4()), thread_id, summary, token_count),
+                table.insert().values(
+                    entry_id=str(uuid.uuid4()),
+                    thread_id=thread_id,
+                    tag="FAKTA",
+                    content=summary,
+                    token_count=token_count,
+                    created_at=utc_now_text(),
+                    is_backup=False,
+                )
             )
-            await connection.executemany(
-                "DELETE FROM ledger_entries WHERE entry_id = ?",
-                [(entry_id,) for entry_id in entry_ids],
+            await connection.execute(
+                delete(table).where(table.c.entry_id.in_(entry_ids))
             )
-            await connection.commit()
             return True
 
     async def claim_telegram_update(self, update_id: int) -> bool:
         """Reserve an update id once; False means it was already processed."""
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                "INSERT OR IGNORE INTO processed_updates (update_id) VALUES (?)",
-                (update_id,),
+        table = self._table("processed_updates")
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                self._insert("processed_updates")
+                .values(update_id=update_id, processed_at=utc_now_text(), is_backup=False)
+                .on_conflict_do_nothing(index_elements=[table.c.update_id])
             )
-            await connection.commit()
-            claimed = cursor.rowcount > 0
+            claimed = result.rowcount > 0
         await self.prune_processed_updates()
         return claimed
 
@@ -574,42 +816,45 @@ class CognitiveLedger:
         limit = self.processed_update_retention if keep is None else keep
         if limit < 0:
             raise ValueError("keep must not be negative")
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                """
-                DELETE FROM processed_updates WHERE update_id NOT IN (
-                    SELECT update_id FROM processed_updates
-                    ORDER BY update_id DESC LIMIT ?
-                )
-                """,
-                (limit,),
+        table = self._table("processed_updates")
+        newest = (
+            select(table.c.update_id)
+            .order_by(table.c.update_id.desc())
+            .limit(limit)
+        )
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                delete(table).where(table.c.update_id.not_in(newest))
             )
-            await connection.commit()
-            return cursor.rowcount
+            return result.rowcount
 
     async def release_telegram_update(self, update_id: int) -> None:
-        async with self._connect() as connection:
+        table = self._table("processed_updates")
+        async with self._engine.begin() as connection:
             await connection.execute(
-                "DELETE FROM processed_updates WHERE update_id = ?", (update_id,)
+                delete(table).where(table.c.update_id == update_id)
             )
-            await connection.commit()
 
     async def set_system_state(self, key: str, value: str) -> None:
-        async with self._connect() as connection:
+        table = self._table("system_state")
+        async with self._engine.begin() as connection:
             await connection.execute(
-                """
-                INSERT INTO system_state (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE
-                SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-                """,
-                (key, value),
+                self._insert("system_state")
+                .values(key=key, value=value, updated_at=utc_now_text(), is_backup=False)
+                .on_conflict_do_update(
+                    index_elements=[table.c.key],
+                    set_={
+                        "value": value,
+                        "updated_at": utc_now_text(),
+                        "is_backup": False,
+                    },
+                )
             )
-            await connection.commit()
 
     async def get_system_state(self, key: str) -> str | None:
-        async with self._connect() as connection:
-            cursor = await connection.execute(
-                "SELECT value FROM system_state WHERE key = ?", (key,)
+        table = self._table("system_state")
+        async with self._engine.connect() as connection:
+            row = await connection.execute(
+                select(table.c.value).where(table.c.key == key)
             )
-            row = await cursor.fetchone()
-            return row["value"] if row else None
+            return row.scalar()

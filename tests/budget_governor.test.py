@@ -185,3 +185,97 @@ def test_sqlite_store_resets_on_new_daily_window(tmp_path):
     now[0] = datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc)
 
     assert governor.remaining_usd("ATELIER_30") == pytest.approx(0.30)
+
+
+def test_agent_share_limits_only_the_agent_side():
+    governor = _governor(rpm_limit=10, budget_ratio_agent=0.5)
+
+    governor.record_api_usage(5, side="AGENT")
+
+    assert governor.agent_limit_reached() == "RPM"
+    assert governor.hard_limit_reached() is None
+
+    governor.record_api_usage(5, side="HUMAN")
+
+    assert governor.hard_limit_reached() == "RPM"
+
+
+def test_agent_freetime_ignores_share_but_keeps_the_global_limit():
+    governor = _governor(rpm_limit=10, budget_ratio_agent=0.5)
+    governor.set_agent_freetime(True)
+
+    governor.record_api_usage(5, side="AGENT")
+    assert governor.agent_limit_reached() is None
+
+    governor.record_api_usage(5, side="AGENT")
+    assert governor.hard_limit_reached() == "RPM"
+
+
+def test_zero_limit_is_unlimited_and_zero_ratio_blocks_agent():
+    governor = _governor(rpm_limit=0, tpm_limit=0, rpd_limit=0, tpd_limit=0)
+    governor.record_api_usage(1000, 10**9)
+
+    assert governor.hard_limit_reached() is None
+    assert governor.check_rate_limit() == "OK"
+
+    strict = _governor(rpm_limit=10, budget_ratio_agent=0.0)
+    assert strict.agent_cap("rpm") == 0
+    assert strict.agent_limit_reached() == "RPM"
+
+
+def test_daily_usage_resets_when_the_utc_day_changes():
+    now = [datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)]
+    governor = _governor(rpd_limit=2, clock=lambda: now[0])
+    governor.record_api_usage(2, side="HUMAN")
+
+    assert governor.hard_limit_reached() == "RPD"
+    assert governor.resume_at_iso("RPD") == "2026-01-02T00:00:00Z"
+
+    now[0] = datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc)
+
+    assert governor.hard_limit_reached() is None
+    assert governor.used("rpd") == 0
+
+
+def test_usage_persists_across_restart(tmp_path):
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "usage.db"
+    first = BudgetGovernor(
+        1.00, rpm_limit=10, store=SqliteBudgetStore(path), clock=lambda: now
+    )
+    first.record_api_usage(3, 100, side="AGENT")
+
+    restarted = BudgetGovernor(
+        1.00, rpm_limit=10, store=SqliteBudgetStore(path), clock=lambda: now
+    )
+
+    assert restarted.used("rpm") == 3
+    assert restarted.used("tpm", "AGENT") == 100
+    assert restarted.used("tpd", "HUMAN") == 0
+
+
+def test_per_key_usage_persists_across_restart(tmp_path):
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "usage.db"
+    first = BudgetGovernor(
+        1.00, rpm_limit=10, store=SqliteBudgetStore(path), clock=lambda: now
+    )
+    first.record_key_usage("primary", 2, 300)
+
+    restarted = BudgetGovernor(
+        1.00, rpm_limit=10, store=SqliteBudgetStore(path), clock=lambda: now
+    )
+
+    assert restarted.key_used("primary", "rpm") == 2
+    assert restarted.key_used("primary", "tpm") == 300
+    assert restarted.key_used("secondary", "rpm") == 0
+
+def test_sqlalchemy_store_enables_wal_and_skips_for_update_on_sqlite(tmp_path):
+    from sqlalchemy import text
+
+    store = SqliteBudgetStore(str(tmp_path / "budget.db"))
+    with store._engine.connect() as connection:
+        assert connection.execute(text("PRAGMA journal_mode;")).scalar() == "wal"
+
+    assert store.reserve("2026-01-01", "CORE_70", 1.0, 0.25) is True
+    assert store.spent("2026-01-01", "CORE_70") == pytest.approx(0.25)

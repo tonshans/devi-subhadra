@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from core.healer_node import HealResult, HealerNode, ProposePatch
+from core.healer_node import ExecutePatch, HealResult, HealerNode, ProposePatch
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class Supervisor:
         worker: Callable[[], Awaitable[Any]],
         propose_patch: ProposePatch,
         timeout_seconds: float | None = None,
+        execute_patch: ExecutePatch | None = None,
     ) -> SupervisorOutcome:
         timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
         try:
@@ -49,7 +50,8 @@ class Supervisor:
 
         heal_result = await self._healer.heal(
             error=error,
-            execute_patch=lambda _patched_code: worker(),
+            execute_patch=execute_patch
+            or (lambda _patched_code: worker()),
             propose_patch=propose_patch,
         )
         return SupervisorOutcome(status="dlq", heal_result=heal_result)

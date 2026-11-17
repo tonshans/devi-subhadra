@@ -36,8 +36,13 @@ class BudgetConfig(StrictConfig):
 
 class RateLimitsConfig(StrictConfig):
     provider: Literal["gemini", "openrouter"]
-    rpm_limit: int = Field(gt=0)
-    tpm_limit: int = Field(gt=0)
+    # 0 means unlimited for every limit below.
+    rpm_limit: int = Field(default=60, ge=0)
+    tpm_limit: int = Field(default=120000, ge=0)
+    rpd_limit: int = Field(default=0, ge=0)
+    tpd_limit: int = Field(default=0, ge=0)
+    budget_ratio_agent: float = Field(default=1.0, ge=0, le=1)
+    agent_freetime: bool = False
     throttle_threshold_ratio: float = Field(gt=0, le=1)
     max_context_tokens: int = Field(gt=0)
 
@@ -45,6 +50,18 @@ class RateLimitsConfig(StrictConfig):
 class ModelsConfig(StrictConfig):
     tier_1_light: str = Field(min_length=1)
     tier_2_heavy: str = Field(min_length=1)
+
+
+class GeminiKeyConfig(StrictConfig):
+    """One API key slot: secret name lives here, the secret itself stays in .env."""
+
+    id: str = Field(min_length=1, max_length=32)
+    env: str = Field(min_length=1)
+    # 0 means unlimited, same convention as rate_limits.
+    rpm_limit: int = Field(default=0, ge=0)
+    tpm_limit: int = Field(default=0, ge=0)
+    rpd_limit: int = Field(default=0, ge=0)
+    tpd_limit: int = Field(default=0, ge=0)
 
 
 class PathsConfig(StrictConfig):
@@ -58,17 +75,45 @@ class PricingConfig(StrictConfig):
     output_usd_per_million: float = Field(default=0.0, ge=0)
 
 
+class BackupConfig(StrictConfig):
+    enabled: bool = True
+    interval_seconds: float = Field(default=3600, gt=0)
+    sqlite_path: str = Field(default="./data/backups/devi_subhadra.db", min_length=1)
+
+
 class AppConfig(StrictConfig):
     agent_name: str = Field(min_length=1)
     execution_mode: Literal["lxc", "local"]
     db_type: Literal["sqlite", "postgres"]
     sqlite_path: str = Field(min_length=1)
-    postgres_dsn: str = Field(min_length=1)
+    # Empty means "read POSTGRES_DSN from the host environment".
+    postgres_dsn: str = ""
+    fallback_sqlite: bool = True
+    fallback_sqlite_path: str = Field(default="./data/devi_subhadra.db", min_length=1)
+    # Run one InnerMonologue initiative every N scheduler ticks (60s each).
+    monologue_every_cycles: int = Field(default=1, ge=1)
+    # LLM-driven curiosity cycles per day; 0 disables proactive thinking.
+    curiosity_daily_limit: int = Field(default=3, ge=0)
+    # Write one audit_logs row per agent step (prompt, CoT, response).
+    audit_enabled: bool = True
+    # Any HALT or STOP file here stops agent work until it is removed.
+    halt_dir: str = Field(default="/mnt/workspace", min_length=1)
     budget: BudgetConfig
     rate_limits: RateLimitsConfig
     models: ModelsConfig
     paths: PathsConfig
+    gemini_keys: list[GeminiKeyConfig] = Field(default_factory=list)
     pricing: PricingConfig = Field(default_factory=PricingConfig)
+    backup: BackupConfig = Field(default_factory=BackupConfig)
+
+    @model_validator(mode="after")
+    def _validate_gemini_keys(self) -> "AppConfig":
+        ids = [key.id for key in self.gemini_keys]
+        if len(set(ids)) != len(ids):
+            raise ValueError("gemini_keys ids must be unique")
+        if self.rate_limits.provider == "gemini" and not self.gemini_keys:
+            raise ValueError("rate_limits.provider=gemini needs gemini_keys entries")
+        return self
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
