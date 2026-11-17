@@ -207,6 +207,7 @@ def test_real_plugins_directory_skips_template_blueprint():
         "mcp_connector",
         "equip_tool",
         "antigravity_delegate",
+        "scheduler",
     } <= set(plugins)
 
 

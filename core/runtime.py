@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -30,6 +31,8 @@ from core.memory_manager import MemoryManager
 from core.pause_controller import PauseController
 from core.plugin_loader import PluginLoader, build_extra_tools_prompt
 from core.provider_pool import AllProvidersUnavailable
+from core.scheduled_task_runner import ScheduledTaskRunner
+from core.scheduled_task_store import ScheduledTaskStore
 from core.schemas import (
     HealerPatchProposal,
     MissionReply,
@@ -43,6 +46,9 @@ Worker = Callable[..., Awaitable[object]]
 Initiative = Callable[[], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
+
+# Mission origin of the caller running a plugin; "AGENT" unless set by a human.
+_MISSION_ORIGIN: ContextVar[str] = ContextVar("mission_origin", default="AGENT")
 
 _UNTIL_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 SLEEP_MODE_LAST_RUN_KEY = "sleep_mode_last_run"
@@ -146,6 +152,13 @@ class Runtime:
         self._notify = notify
         self._pause_controller = PauseController(
             ledger, governor, notify=self._notice
+        )
+        self._scheduled_tasks = ScheduledTaskStore()
+        self._scheduled_task_runner = ScheduledTaskRunner(
+            self._scheduled_tasks,
+            notify=self._notice,
+            run_plugin=self.run_plugin,
+            read_row=self._ledger.read,
         )
 
     @property
@@ -593,7 +606,13 @@ class Runtime:
                 break
             tool_rounds += 1
             tool_started = time.perf_counter()
-            output = await self.run_plugin(plugin, raw_reply.plugin_payload or {})
+            token = _MISSION_ORIGIN.set(side)
+            try:
+                output = await self.run_plugin(
+                    plugin, raw_reply.plugin_payload or {}
+                )
+            finally:
+                _MISSION_ORIGIN.reset(token)
             step += 1
             last_audit_id = await self._audit(
                 trace_id=trace_id,
@@ -793,6 +812,9 @@ class Runtime:
             return PluginOutputSchema(
                 success=False, data={}, error_message=f"Unknown plugin: {name}"
             )
+        if name == "scheduler":
+            # Kill tasks trust this field, so the runtime stamps it, not the LLM.
+            payload = {**payload, "origin": _MISSION_ORIGIN.get()}
         output = await self._call_plugin(plugin, payload)
         if (
             name == "sandbox_executor"
@@ -901,6 +923,7 @@ class Runtime:
         )
 
     async def scheduled_tick(self, now: datetime | None = None) -> Any:
+        await self._scheduled_task_runner.tick(now)
         await self.auto_resume()
         if await self.blocked():
             return None
