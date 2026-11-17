@@ -23,6 +23,7 @@ CORE_PLUGIN_NAMES = frozenset(
         "equip_tool",
         "academic_search",
         "community_pulse",
+        "scheduler",
     }
 )
 
