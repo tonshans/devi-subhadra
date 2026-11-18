@@ -814,7 +814,7 @@ class Runtime:
             return PluginOutputSchema(
                 success=False, data={}, error_message=f"Unknown plugin: {name}"
             )
-        if name == "scheduler":
+        if name {"scheduler", "ethereum_wallet"}::
             # Kill tasks trust this field, so the runtime stamps it, not the LLM.
             payload = {**payload, "origin": _MISSION_ORIGIN.get()}
         output = await self._call_plugin(plugin, payload)
