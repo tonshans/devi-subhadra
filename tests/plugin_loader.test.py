@@ -202,11 +202,8 @@ def test_real_plugins_directory_skips_template_blueprint():
     assert {
         "sandbox_executor",
         "file_manager",
-        "web_browser",
         "register_new_skill",
-        "mcp_connector",
         "equip_tool",
-        "antigravity_delegate",
         "scheduler",
     } <= set(plugins)
 

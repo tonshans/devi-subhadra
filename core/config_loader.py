@@ -83,6 +83,8 @@ class BackupConfig(StrictConfig):
 
 class AppConfig(StrictConfig):
     agent_name: str = Field(min_length=1)
+    # Override the eager Tier-1 plugin set; omit to use CORE_PLUGIN_NAMES.
+    core_plugins: list[str] | None = None
     execution_mode: Literal["lxc", "local"]
     db_type: Literal["sqlite", "postgres"]
     sqlite_path: str = Field(min_length=1)

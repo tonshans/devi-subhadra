@@ -65,10 +65,12 @@ class MissionBlockedError(Exception):
 
 
 def load_plugins(
-    plugins_dir: str | Path, config: dict
+    plugins_dir: str | Path,
+    config: dict,
+    core_plugins: frozenset[str] | set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Discover plugins once: eager Tier 1 tools plus the Tier 2 catalog."""
-    loader = PluginLoader(plugins_dir)
+    loader = PluginLoader(plugins_dir, core_plugins=core_plugins)
     plugins = loader.load_all()
     for name, plugin in list(plugins.items()):
         try:

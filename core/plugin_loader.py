@@ -15,14 +15,9 @@ from core.schemas import StrictBaseModel
 CORE_PLUGIN_NAMES = frozenset(
     {
         "file_manager",
-        "web_browser",
         "sandbox_executor",
-        "antigravity_delegate",
         "register_new_skill",
-        "mcp_connector",
         "equip_tool",
-        "academic_search",
-        "community_pulse",
         "scheduler",
     }
 )

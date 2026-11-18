@@ -14,9 +14,12 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "tiktoken>=0.7",
     "uvicorn>=0.30",
-    "playwright>=1.40",
     "chromadb>=1.5.9",
 ]
+
+[project.optional-dependencies]
+# Needed only by the headless_browser plugin from devi-subhadra-plugins.
+browser = ["playwright>=1.40"]
 
 [dependency-groups]
 dev = [

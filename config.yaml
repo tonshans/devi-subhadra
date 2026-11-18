@@ -1,4 +1,8 @@
 agent_name: "devi-subhadra"
+# Tier-1 plugin yang selalu aktif. Kalau field ini dihilangkan, daftar default
+# dipakai: file_manager, sandbox_executor, register_new_skill, equip_tool,
+# scheduler. Isi [] untuk membuat semua plugin lewat katalog equip_tool.
+# core_plugins: ["file_manager", "sandbox_executor", "register_new_skill", "equip_tool", "scheduler"]
 execution_mode: "lxc" # Enum: "lxc" | "local"
 db_type: "sqlite" # Enum: "sqlite" | "postgres"
 sqlite_path: "./data/devi_subhadra.db"

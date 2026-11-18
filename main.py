@@ -140,7 +140,9 @@ def build_runtime(
         "archived_plugins_dir": str(archived_dir),
         "ledger": ledger,
     }
-    plugins, catalog = load_plugins(plugin_dir, plugin_config)
+    plugins, catalog = load_plugins(
+        plugin_dir, plugin_config, core_plugins=settings.core_plugins
+    )
     if worker is None:
         worker = build_worker(settings, governor)
     return Runtime(

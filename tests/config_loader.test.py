@@ -84,6 +84,16 @@ def test_pricing_defaults_to_zero_when_absent(tmp_path):
     assert config.pricing.output_usd_per_million == 0.0
 
 
+def test_core_plugins_can_be_overridden(tmp_path):
+    assert load_config(_write_config(tmp_path, _valid_config())).core_plugins is None
+
+    data = _valid_config()
+    data["core_plugins"] = ["scheduler"]
+    config = load_config(_write_config(tmp_path, data))
+
+    assert config.core_plugins == ["scheduler"]
+
+
 def test_pricing_parses_provider_rates(tmp_path):
     data = _valid_config()
     data["pricing"] = {

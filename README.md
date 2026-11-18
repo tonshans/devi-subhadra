@@ -82,16 +82,21 @@ Salah satu kontribusi menarik dari proyek ini adalah bagaimana mekanisme neuro-k
 6. **Settlement & Glass-Box Auditing:** Biaya aktual dihitung (`settle`), dokumen hasil dikirim ke pengguna (atau disimpan sebagai file `.md` jika melampaui 12.000 karakter), dan setiap langkah dicatat lengkap dengan *Chain-of-Thought* (`cot`), latensi, serta biaya ke dalam tabel `audit_logs`.
 
 ### 2. Kapabilitas Ekstensi & Self-Evolution (Core Plugins)
-Secara bawaan (*out-of-the-box*), Devi-Subhadra dilengkapi dengan 9 plugin inti (Tier 1):
+Secara bawaan (*out-of-the-box*), Devi-Subhadra hanya membawa 5 plugin inti (Tier 1) agar tetap ringan:
 * **`file_manager`**: Operasi baca/tulis/daftar file yang dikurung (*jailed*) secara ketat di dalam `/mnt/workspace` dan `/mnt/agent_atelier` (anti *path-traversal*).
 * **`sandbox_executor`**: Eksekusi kode Python dan Bash terisolasi yang mewajibkan pernyataan `assert` (*Assertion-Driven Execution*), memblokir perintah destruktif, dan menyaring *Abstract Syntax Tree* (AST) Python secara ketat.
-* **`antigravity_delegate`**: Jembatan asinkron *headless* untuk memerintahkan agen coding eksternal (**Antigravity CLI / `agy`**) membangun proyek perangkat lunak utuh di dalam container LXC. Dilengkapi *System Override* yang memaksa agen membungkus proyek baru tersebut menjadi plugin Python.
-* **`register_new_skill` & `equip_tool`**: Manajer siklus hidup keahlian berbasis *Test-Driven Development* (TDD). Agen dapat membuat plugin baru beserta unit test `pytest`-nya, meng-upgrade plugin lama, atau memulihkan (*restore*) plugin dari folder arsip sesuai **SOP Anti-Amnesia**.
-* **`academic_search`**: Pencarian jurnal dan literatur ilmiah terkini melalui **OpenAlex API**.
-* **`headless_browser`**: Peramban berbasis **Playwright Chromium** untuk mengobservasi tren real-time di **X (Twitter)** dan **Threads** melalui ekstraksi DOM asinkron (mendukung injeksi *session cookie* tanpa API berbayar).
-* **`community_pulse`**: Pemantauan sentimen dan diskusi komunitas teknis melalui **Reddit JSON API**.
-* **`web_browser`**: Ekstraktor fakta halaman web publik yang dilengkapi proteksi anti-SSRF (memblokir resolusi DNS ke IP lokal/privat).
-* **`mcp_connector`**: Konektor standar **Model Context Protocol (MCP)** untuk menemukan dan memanggil alat eksternal atau sensor perangkat keras.
+* **`register_new_skill` & `equip_tool`**: Manajer siklus hidup keahlian berbasis *Test-Driven Development* (TDD). Agen dapat membuat plugin baru beserta unit test `pytest`-nya, meng-upgrade plugin lama, atau memulihkan (*restore*) plugin dari folder arsip sesuai **SOP Anti-Amnesia**. `equip_tool` memuat plugin Tier 2 dari katalog saat dibutuhkan.
+* **`scheduler`**: Penjadwalan tugas berulang di dalam runtime agen.
+
+Kemampuan tambahan dipisah ke repo [**`devi-subhadra-plugins`**](https://github.com/tonshans/devi-subhadra-plugins): `web_browser`, `headless_browser`, `mcp_connector`, `antigravity_delegate`, `academic_search`, dan `community_pulse`. Pasang hanya yang dibutuhkan:
+
+```bash
+cd ../devi-subhadra-plugins
+python3 devi-plugins.py available
+python3 devi-plugins.py install web_browser   # atau nama plugin lain
+```
+
+Daftar plugin Tier 1 bisa dioverride lewat `core_plugins` di `config.yaml`. Isi `[]` membuat semua plugin tersedia lewat katalog `equip_tool` saja.
 
 ---
 
@@ -150,7 +155,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-# Menginstal browser Chromium untuk plugin headless_browser
+# Menginstal browser Chromium untuk plugin headless_browser (opsional)
+pip install -e '.[browser]'
 playwright install chromium
 
 ```

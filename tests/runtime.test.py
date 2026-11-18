@@ -472,9 +472,27 @@ def test_load_plugins_initializes_each_with_config(tmp_path):
     )
 
     assert "file_manager" in plugins
-    assert "headless_browser" in catalog
+    assert "web_browser" not in plugins  # optional plugins are Tier 2
     assert (tmp_path / "workspace").is_dir()
     assert (tmp_path / "atelier").is_dir()
+
+
+def test_load_plugins_core_override_moves_everything_to_catalog(tmp_path):
+    repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+
+    plugins, catalog = load_plugins(
+        repo_plugins,
+        {
+            "paths": {
+                "workspace_dir": str(tmp_path / "workspace"),
+                "atelier_dir": str(tmp_path / "atelier"),
+            }
+        },
+        core_plugins=set(),
+    )
+
+    assert plugins == {}
+    assert "file_manager" in catalog
 
 
 def test_scheduled_tick_pings_wake_up_and_runs_initiative(tmp_path):
