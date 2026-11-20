@@ -321,3 +321,9 @@ def create_app(
         }
 
     return app
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:create_production_app", factory=True, host="0.0.0.0", port=8000)

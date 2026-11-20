@@ -210,8 +210,9 @@ class Runtime:
             "IDLE CYCLE. You are between tasks.\n"
             f"VISION: {vision or 'not set'}\n"
             f"{busy}\n"
-            "Choose CREATE_INITIATIVE with one concrete next step toward the "
-            "vision, or SLEEP_NOOP when nothing useful remains today."
+            "Choose CREATE_INITIATIVE with a concrete next step toward the vision, "
+            "REPLY_USER to ask your partner (tonhan) a question/share an idea, "
+            "or SLEEP_NOOP when nothing useful remains today."
         )
 
     async def _curiosity_cycle(self) -> None:
@@ -249,6 +250,11 @@ class Runtime:
 
         await self._ledger.set_system_state(key, str(used + 1))
         thinking = decision.action_type == "CREATE_INITIATIVE"
+        
+        if decision.action_type == "REPLY_USER" and decision.reply_message:
+            await self._notice(f"[Partner Ping]: {decision.reply_message}")
+            return
+            
         thread_id = await self._ledger.create_thread(
             f"Curiosity: {decision.thought_entry[:60]}",
             "AGENT",
@@ -814,7 +820,7 @@ class Runtime:
             return PluginOutputSchema(
                 success=False, data={}, error_message=f"Unknown plugin: {name}"
             )
-        if name {"scheduler", "ethereum_wallet"}::
+        if name in {"scheduler", "ethereum_wallet"}:
             # Kill tasks trust this field, so the runtime stamps it, not the LLM.
             payload = {**payload, "origin": _MISSION_ORIGIN.get()}
         output = await self._call_plugin(plugin, payload)
