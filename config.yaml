@@ -3,7 +3,7 @@ agent_name: "devi-subhadra"
 # dipakai: file_manager, sandbox_executor, register_new_skill, equip_tool,
 # scheduler. Isi [] untuk membuat semua plugin lewat katalog equip_tool.
 # core_plugins: ["file_manager", "sandbox_executor", "register_new_skill", "equip_tool", "scheduler"]
-execution_mode: "lxc" # Enum: "lxc" | "local"
+execution_mode: "local" # Enum: "lxc" | "local"
 db_type: "sqlite" # Enum: "sqlite" | "postgres"
 sqlite_path: "./data/devi_subhadra.db"
 # Leave empty and put the real DSN in .env as POSTGRES_DSN.
@@ -11,26 +11,26 @@ postgres_dsn: ""
 fallback_sqlite: true
 fallback_sqlite_path: "./data/devi_subhadra.db"
 # InnerMonologue runs once every N scheduler ticks (60s each); 5 = every 5 minutes.
-monologue_every_cycles: 5
+monologue_every_cycles: 3
 # LLM curiosity cycles per day. 0 turns proactive thinking off.
-curiosity_daily_limit: 3
+curiosity_daily_limit: 12
 # One audit_logs row per agent step (prompt, CoT, response, cost).
 audit_enabled: true
 # Empty HALT or STOP file in this directory stops agent work until removed.
 # Falls back to paths.workspace_dir when the directory does not exist.
-halt_dir: "/mnt/workspace"
+halt_dir: "./data/workspace"
 
 budget:
   max_initiative_budget_usd: 2.50
-  core_task_ratio: 0.70
-  atelier_ratio: 0.30
+  core_task_ratio: 0.50
+  atelier_ratio: 0.50
 
 rate_limits:
   provider: "gemini" # Enum: "gemini" | "openrouter"
   # 0 = unlimited. Global limits cover every request (human + agent).
-  rpm_limit: 60
-  tpm_limit: 120000
-  rpd_limit: 1000
+  rpm_limit: 15
+  tpm_limit: 250000
+  rpd_limit: 500
   tpd_limit: 2000000
   # Agent initiatives may only use this share of each limit; 1.0 = full limit.
   budget_ratio_agent: 0.40
@@ -44,23 +44,23 @@ gemini_keys:
   - id: "primary"
     env: "GEMINI_API_KEY_PRIMARY"
     rpm_limit: 15
-    tpm_limit: 1000000
+    tpm_limit: 250000
     rpd_limit: 1500
     tpd_limit: 10000000
   - id: "secondary"
     env: "GEMINI_API_KEY_SECONDARY"
     rpm_limit: 15
-    tpm_limit: 1000000
+    tpm_limit: 250000
     rpd_limit: 1500
     tpd_limit: 10000000
 
 models:
-  tier_1_light: "gemini-2.5-flash"
-  tier_2_heavy: "gemini-2.5-flash"
+  tier_1_light: "gemini-3.5-flash-lite"
+  tier_2_heavy: "gemini-3.5-flash-lite"
 
 paths:
-  workspace_dir: "./mnt/workspace"
-  atelier_dir: "./mnt/agent_atelier"
+  workspace_dir: "./data/workspace"
+  atelier_dir: "./data/agent_atelier"
 
 # Set real provider rates before enabling budget enforcement; 0.0 = flat cost.
 pricing:
@@ -69,6 +69,6 @@ pricing:
 
 # Only used when db_type is postgres; snapshots are incremental (is_backup flag).
 backup:
-  enabled: true
+  enabled: false
   interval_seconds: 3600
   sqlite_path: "./data/backups/devi_subhadra.db"

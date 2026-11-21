@@ -1,6 +1,7 @@
 """Integration tests for app boot, health, and the Telegram webhook contract."""
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -17,10 +18,12 @@ from core.config_loader import SecretNotFoundError
 from core.db.engine import DatabaseRuntime
 from core.runtime import Runtime
 from core.provider_pool import ProviderPool
+import main as main_module
 from main import (
     build_gateway,
     build_runtime,
     build_worker,
+    configure_logging,
     create_app,
     create_production_app,
 )
@@ -31,6 +34,72 @@ def _app(tmp_path, **kwargs):
     governor = BudgetGovernor(1.00)
     kwargs.setdefault("webhook_token", "agent-secret")
     return create_app(ledger=ledger, governor=governor, **kwargs), ledger
+
+
+def test_configure_logging_is_idempotent_and_terminal_only(monkeypatch):
+    monkeypatch.setattr(main_module, "_LOGGING_CONFIGURED", False)
+    root = logging.getLogger()
+    old_level = root.level
+    try:
+        configure_logging("DEBUG")
+        configure_logging("INFO")
+        assert root.level == logging.DEBUG
+        stdout_handlers = [
+            handler
+            for handler in root.handlers
+            if isinstance(handler, logging.StreamHandler)
+            and handler.stream is sys.stdout
+        ]
+        assert len(stdout_handlers) == 1
+    finally:
+        root.setLevel(old_level)
+
+
+def test_startup_notice_sends_status_to_telegram(tmp_path):
+    sent = []
+
+    async def sender(chat_id, message):
+        sent.append(message)
+
+    gateway = TelegramGateway(sender=sender, allowed_chat_id=123)
+    app, _ = _app(tmp_path, gateway=gateway, startup_notice=True)
+
+    with TestClient(app):
+        pass
+
+    assert len(sent) == 1
+    assert "online" in sent[0]
+    assert "state: running" in sent[0]
+
+
+def test_startup_notice_is_off_by_default(tmp_path):
+    sent = []
+
+    async def sender(chat_id, message):
+        sent.append(message)
+
+    gateway = TelegramGateway(sender=sender, allowed_chat_id=123)
+    app, _ = _app(tmp_path, gateway=gateway)
+
+    with TestClient(app):
+        pass
+
+    assert sent == []
+
+
+def test_webhook_logs_inbound_update(tmp_path, caplog):
+    gateway = TelegramGateway(allowed_chat_id=123)
+    app, _ = _app(tmp_path, gateway=gateway)
+    update = {
+        "update_id": 501,
+        "message": {"message_id": 502, "chat": {"id": 123}, "text": "halo"},
+    }
+
+    with caplog.at_level(logging.INFO, logger="api.telegram_gateway"):
+        with TestClient(app) as client:
+            client.post("/api/webhook/telegram", json=update)
+
+    assert "telegram update 501 chat=123" in caplog.text
 
 
 def test_build_gateway_reads_telegram_secrets(monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -13,6 +14,7 @@ from api.telegram_gateway import MAX_CHUNK_CHARS
 DEFAULT_API_BASE = "https://api.telegram.org"
 UPLOAD_TIMEOUT = 120
 MAX_RETRY_WAIT = 30
+logger = logging.getLogger(__name__)
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
@@ -49,11 +51,35 @@ class TelegramSender:
         self._timeout = timeout
         self._sleep = sleep or asyncio.sleep
 
-    async def _post(self, url: str, payload: dict) -> httpx.Response:
+    async def _post(
+        self, url: str, payload: dict, timeout: float | None = None
+    ) -> httpx.Response:
         if self._client is not None:
             return await self._client.post(url, json=payload)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout or self._timeout) as client:
             return await client.post(url, json=payload)
+
+    async def _call(self, method: str, payload: dict) -> object:
+        """POST a Bot API method; never forward httpx errors (token is in URL)."""
+        url = f"{self._api_base}/bot{self._token}/{method}"
+        try:
+            response = await self._post(url, payload, timeout=max(self._timeout, 35))
+            response.raise_for_status()
+            body = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Telegram API HTTP {exc.response.status_code}") from None
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Telegram API request failed: {type(exc).__name__}"
+            ) from None
+        except ValueError:
+            raise RuntimeError("Telegram API returned invalid JSON") from None
+        if not body.get("ok", False):
+            raise RuntimeError(
+                f"Telegram rejected {method}: "
+                f"{body.get('description', 'unknown error')}"
+            )
+        return body.get("result")
 
     async def __call__(self, chat_id: int, message: str) -> None:
         if len(message) > MAX_CHUNK_CHARS:
@@ -81,6 +107,24 @@ class TelegramSender:
             raise RuntimeError(
                 f"Telegram rejected message: {body.get('description', 'unknown error')}"
             )
+        logger.debug("telegram message sent chat=%s chars=%s", chat_id, len(message))
+
+    async def get_webhook_info(self) -> dict:
+        """Return Telegram's view of the webhook (url, pending, last error)."""
+        return await self._call("getWebhookInfo", {}) or {}
+
+    async def get_updates(
+        self, offset: int | None = None, timeout: int = 25
+    ) -> list[dict]:
+        """Long-poll pending updates (webhook must be deleted first)."""
+        payload: dict = {"timeout": timeout, "allowed_updates": ["message"]}
+        if offset is not None:
+            payload["offset"] = offset
+        return await self._call("getUpdates", payload) or []
+
+    async def delete_webhook(self) -> bool:
+        """Remove any webhook so getUpdates can own the update queue."""
+        return bool(await self._call("deleteWebhook", {}))
 
     async def send_document(
         self, chat_id: int, path: str | Path, caption: Optional[str] = None

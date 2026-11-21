@@ -119,6 +119,66 @@ def test_second_429_is_capped_and_raised():
     assert delays == [30.0]
 
 
+def test_get_webhook_info_returns_result():
+    def handler(request):
+        assert request.url.path == "/botsecret-token/getWebhookInfo"
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": {"url": "https://example.test/hook", "pending_update_count": 2},
+            },
+        )
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("secret-token", client=client)
+            return await sender.get_webhook_info()
+
+    result = asyncio.run(scenario())
+
+    assert result["url"] == "https://example.test/hook"
+    assert result["pending_update_count"] == 2
+
+
+def test_get_updates_posts_offset_and_timeout():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(
+            200, json={"ok": True, "result": [{"update_id": 7}]}
+        )
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("secret-token", client=client)
+            return await sender.get_updates(offset=5, timeout=25)
+
+    updates = asyncio.run(scenario())
+
+    assert updates == [{"update_id": 7}]
+    assert seen[0].url.path == "/botsecret-token/getUpdates"
+    assert json.loads(seen[0].content) == {
+        "timeout": 25,
+        "allowed_updates": ["message"],
+        "offset": 5,
+    }
+
+
+def test_delete_webhook_calls_bot_api():
+    def handler(request):
+        assert request.url.path == "/botsecret-token/deleteWebhook"
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    async def scenario():
+        async with _client(handler) as client:
+            sender = TelegramSender("secret-token", client=client)
+            return await sender.delete_webhook()
+
+    assert asyncio.run(scenario()) is True
+
+
 def test_send_document_posts_multipart(tmp_path):
     seen = []
     document = tmp_path / "laporan.txt"

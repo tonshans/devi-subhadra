@@ -2,10 +2,17 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from api.telegram_gateway import TelegramGateway, chunk_message
+from api.telegram_gateway import (
+    TELEGRAM_OFFSET_KEY,
+    TelegramGateway,
+    chunk_message,
+    polling_loop,
+)
+from core.cognitive_ledger import CognitiveLedger
 
 
 def test_chunks_9500_characters_into_three_bounded_messages():
@@ -161,5 +168,53 @@ def test_send_file_requires_configured_chat(tmp_path):
 
         with pytest.raises(RuntimeError, match="allowlist"):
             await gateway.send_file("note.txt")
+
+    asyncio.run(scenario())
+
+
+def test_polling_loop_processes_updates_and_persists_offset(tmp_path):
+    offsets = []
+    sent = []
+
+    async def sender(chat_id, message):
+        sent.append(message)
+
+    async def responder(update, thread_id):
+        return "polled"
+
+    async def fake_updates(offset=None, timeout=25):
+        offsets.append(offset)
+        if len(offsets) > 1:
+            raise asyncio.CancelledError
+        return [
+            {
+                "update_id": 10,
+                "message": {
+                    "message_id": 11,
+                    "chat": {"id": 123},
+                    "text": "halo",
+                },
+            }
+        ]
+
+    async def scenario():
+        ledger = CognitiveLedger(tmp_path / "poll.db")
+        await ledger.initialize()
+        gateway = TelegramGateway(sender=sender, allowed_chat_id=123)
+        gateway.get_updates = fake_updates
+        state = SimpleNamespace(
+            gateway=gateway,
+            command_context=None,
+            ledger=ledger,
+            runtime=None,
+            responder=responder,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(polling_loop(state), timeout=2)
+
+        assert sent == ["polled"]
+        assert offsets == [None, 11]
+        assert await ledger.get_system_state(TELEGRAM_OFFSET_KEY) == "11"
 
     asyncio.run(scenario())

@@ -77,6 +77,7 @@ After=network-online.target
 Type=simple
 WorkingDirectory=$PROJECT_ROOT
 EnvironmentFile=-$PROJECT_ROOT/.env
+Environment=TELEGRAM_POLLING=1
 ExecStart=$UVICORN_BIN main:create_production_app --factory --host $APP_HOST --port $APP_PORT
 Restart=on-failure
 RestartSec=5
