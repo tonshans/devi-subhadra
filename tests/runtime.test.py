@@ -442,18 +442,66 @@ def test_mission_prompt_includes_atelier_catalog_and_sop(tmp_path):
         thread_id = await ledger.create_thread("Mission A", "HUMAN")
         prompts = []
 
+        class CoreStub:
+            description = "Always available."
+
         async def worker(prompt):
             prompts.append(prompt)
             return "ok"
 
-        runtime = Runtime(ledger, governor, worker=worker)
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins={"core_tool": CoreStub()},
+            plugin_catalog={"lazy_tool": "On demand."},
+            worker=worker,
+        )
 
         await runtime.handle_mission(thread_id, "halo")
 
+        assert "[ALAT INTI]" in prompts[0]
+        assert "- core_tool: Always available." in prompts[0]
         assert "[KATALOG ALAT EKSTRA]" in prompts[0]
         assert "- lazy_tool: On demand." in prompts[0]
         assert "[SOP ANTI-AMNESIA]" in prompts[0]
         assert "equip_tool" in prompts[0]
+
+    asyncio.run(scenario())
+
+
+def test_tool_catalog_prompt_lists_real_core_plugins(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        plugins, catalog = load_plugins(
+            repo_plugins,
+            {
+                "paths": {
+                    "workspace_dir": str(tmp_path / "workspace"),
+                    "atelier_dir": str(tmp_path / "atelier"),
+                }
+            },
+        )
+        runtime = Runtime(
+            ledger,
+            governor,
+            plugins=plugins,
+            plugin_catalog=catalog,
+            worker=None,
+        )
+
+        prompt = await runtime._tool_catalog_prompt()
+
+        core_section = prompt.split("[KATALOG ALAT EKSTRA]")[0]
+        for name in (
+            "sandbox_executor",
+            "scheduler",
+            "file_manager",
+            "register_new_skill",
+            "equip_tool",
+        ):
+            assert f"- {name}:" in core_section
+        assert "web_browser" not in core_section
 
     asyncio.run(scenario())
 
@@ -834,6 +882,73 @@ def test_resume_next_active_reruns_a_crashed_mission(tmp_path):
     asyncio.run(scenario())
 
 
+def test_resume_next_active_sends_a_completed_reply(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.create(
+            "ledger_entries",
+            thread_id=thread_id,
+            tag="TINDAKAN",
+            content="kerjakan ini",
+            token_count=2,
+        )
+        await ledger.record_thread_attempt(thread_id)
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
+        notices = []
+
+        async def worker(prompt):
+            return "lanjut selesai"
+
+        async def notify(message):
+            notices.append(message)
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        reply = await runtime.resume_next_active()
+
+        assert reply == "lanjut selesai"
+        assert notices == ["lanjut selesai"]
+
+    asyncio.run(scenario())
+
+
+def test_resume_next_active_skips_an_unfinished_reply(tmp_path, monkeypatch):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        thread_id = await ledger.create_thread("Crashed", "HUMAN")
+        await ledger.update(
+            "ledger_threads",
+            thread_id,
+            last_attempt_at="2000-01-01 00:00:00.000000",
+        )
+        notices = []
+
+        async def notify(message):
+            notices.append(message)
+
+        async def worker(prompt):
+            return "ok"
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        async def still_active(*args, **kwargs):
+            return "worker failed"
+
+        monkeypatch.setattr(runtime, "handle_mission", still_active)
+
+        reply = await runtime.resume_next_active()
+
+        assert reply == "worker failed"
+        assert notices == []
+
+    asyncio.run(scenario())
+
+
 def test_resume_next_active_respects_the_retry_cooldown(tmp_path):
     async def scenario():
         ledger, governor = await _setup(tmp_path)
@@ -994,6 +1109,82 @@ def test_curiosity_cycle_marks_sleep_noop_threads_completed(tmp_path):
         assert await ledger.get_next_active_thread(origin="AGENT") is None
         logs = await ledger.list_activity_logs()
         assert logs == []
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_reply_user_sends_and_audits(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        notices = []
+
+        async def worker(prompt, structured_model=None):
+            return _decision("REPLY_USER", reply_message="Halo Hanito")
+
+        async def notify(message):
+            notices.append(message)
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        await runtime._default_initiative()
+
+        assert notices == ["[Partner Ping]: Halo Hanito"]
+        threads = await ledger.list_threads()
+        ping = next(t for t in threads if t["title"].startswith("Partner Ping: "))
+        rows = await ledger.list_audit_logs(ping["thread_id"])
+        assert rows[0]["action"] == "REPLY_USER"
+        assert rows[0]["outcome"] == "SUCCESS"
+        assert rows[0]["trigger"] == "CURIOSITY"
+        entries = await ledger.list_ledger_entries(
+            ping["thread_id"], tags=("FAKTA",)
+        )
+        assert entries[-1]["content"] == "Halo Hanito"
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_reply_user_falls_back_to_thought_entry(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        notices = []
+
+        async def worker(prompt, structured_model=None):
+            return _decision("REPLY_USER")
+
+        async def notify(message):
+            notices.append(message)
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        await runtime._default_initiative()
+
+        assert notices == ["[Partner Ping]: explore async sqlite tuning"]
+
+    asyncio.run(scenario())
+
+
+def test_curiosity_reply_user_records_a_failed_delivery(tmp_path):
+    async def scenario():
+        ledger, governor = await _setup(tmp_path)
+        attempts = []
+
+        async def worker(prompt, structured_model=None):
+            return _decision("REPLY_USER", reply_message="Halo Hanito")
+
+        async def notify(message):
+            attempts.append(message)
+            raise RuntimeError("telegram down")
+
+        runtime = Runtime(ledger, governor, worker=worker, notify=notify)
+
+        await runtime._default_initiative()
+
+        assert attempts == ["[Partner Ping]: Halo Hanito"]
+        threads = await ledger.list_threads()
+        ping = next(t for t in threads if t["title"].startswith("Partner Ping: "))
+        rows = await ledger.list_audit_logs(ping["thread_id"])
+        assert rows[0]["action"] == "REPLY_USER"
+        assert rows[0]["outcome"] == "FAILED"
 
     asyncio.run(scenario())
 

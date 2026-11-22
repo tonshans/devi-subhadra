@@ -25,9 +25,21 @@ CORE_PLUGIN_NAMES = frozenset(
 _PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-def build_extra_tools_prompt(rows: list[dict], archived_dir: str | Path) -> str:
-    """One prompt block: the ATELIER catalog plus the anti-amnesia SOP."""
-    lines = ["[KATALOG ALAT EKSTRA] Kamu memiliki alat-alat tambahan ini:"]
+def build_extra_tools_prompt(
+    rows: list[dict],
+    archived_dir: str | Path,
+    core_rows: list[dict] | None = None,
+) -> str:
+    """One prompt block: core tools, the ATELIER catalog, and the SOP."""
+    lines: list[str] = []
+    if core_rows:
+        lines.append("[ALAT INTI] Selalu aktif, panggil langsung tanpa 'equip_tool':")
+        lines.extend(
+            f"- {row['plugin_name']}: {row['description_summary']}"
+            for row in core_rows
+        )
+        lines.append("")
+    lines.append("[KATALOG ALAT EKSTRA] Kamu memiliki alat-alat tambahan ini:")
     if rows:
         lines.extend(
             f"- {row['plugin_name']}: {row['description_summary']}" for row in rows

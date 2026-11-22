@@ -220,6 +220,7 @@ Seluruh perintah di bawah ini dieksekusi secara instan tanpa memanggil LLM (**Ze
 | --- | --- |
 | `/status` | Menampilkan kondisi agen, *uptime*, temperatur CPU, ruang disk, sisa anggaran USD, kuota RPM/TPM/RPD/TPD, status tiap API key, dan aktivitas terakhir. |
 | `/trace <thread_id|trace_id>` | Membedah jejak audit langkah demi langkah: waktu, pemicu, *Chain-of-Thought* (`why`), aksi/plugin yang dipanggil, latensi, dan biaya. |
+| `/thread [status]` | Menampilkan 20 thread terbaru beserta `thread_id` lengkap untuk `/trace`; filter status `Active`, `Paused`, `Completed`, atau `Archived`. `/thread help` menampilkan usage. |
 | `/budget-ratio <human> <agent>` | Mengatur persentase kuota *rate-limit* yang boleh digunakan oleh inisiatif mandiri agen (contoh: `/budget-ratio 60 40`). |
 | `/agent-freetime on|off|status` | Mengizinkan atau mencabut hak agen untuk menggunakan 100% batas kuota global saat waktu luang. |
 | `/approve [nama_skill]` | Menjalankan pengujian `pytest` dan mengaktifkan plugin baru yang dibuat agen di folder `.pending_skills/`. Tanpa argumen: melihat daftar antrean. |

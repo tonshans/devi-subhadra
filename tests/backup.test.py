@@ -221,7 +221,11 @@ def test_backup_loop_keeps_running_until_cancelled(tmp_path):
             "core_directives", directive_type="VISION", content="loop"
         )
         task = asyncio.create_task(backup_loop(ledger.engine, snapshot, 0.01))
-        await asyncio.sleep(0.1)
+        for _ in range(100):
+            row = await ledger.read("core_directives", directive_id)
+            if snapshot.is_file() and row["is_backup"] is True:
+                break
+            await asyncio.sleep(0.02)
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

@@ -14,13 +14,13 @@ from core.schemas import MissionReply
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 STRUCTURED_INSTRUCTION = (
-    'Reply ONLY as JSON: {"reply": "<text for the user>", '
-    '"files": ["<local file path inside workspace or atelier>"], '
+    'Reply ONLY as JSON: {"reply": "<text>", '
+    '"files": ["<local file path>"], '
     '"plugin": "<tool name or null>", "plugin_payload": {}, '
-    '"reasoning": "<one or two sentences on why you chose this>"}. '
-    "Use an empty files list when no file should be sent. "
-    "Set plugin only when a listed tool is needed; the tool runs and you are "
-    "asked again for the final reply."
+    '"reasoning": "<1-2 sentences>"}. '
+    "CRITICAL: If your task requires researching, browsing, coding, or writing files, "
+    "you MUST set `plugin` and a valid `plugin_payload` NOW. Never just announce "
+    "that you are 'initiating' or 'designing' something with plugin=null."
 )
 
 

@@ -212,7 +212,9 @@ class Runtime:
             f"{busy}\n"
             "Choose CREATE_INITIATIVE with a concrete next step toward the vision, "
             "REPLY_USER to ask your partner (tonhan) a question/share an idea, "
-            "or SLEEP_NOOP when nothing useful remains today."
+            "or SLEEP_NOOP when nothing useful remains today. REPLY_USER requires "
+            "reply_message to hold the exact message for tonhan; keep analysis in "
+            "thought_entry."
         )
 
     async def _curiosity_cycle(self) -> None:
@@ -251,10 +253,40 @@ class Runtime:
         await self._ledger.set_system_state(key, str(used + 1))
         thinking = decision.action_type == "CREATE_INITIATIVE"
         
-        if decision.action_type == "REPLY_USER" and decision.reply_message:
-            await self._notice(f"[Partner Ping]: {decision.reply_message}")
+        if decision.action_type == "REPLY_USER":
+            if not decision.reply_message:
+                logger.warning("REPLY_USER without reply_message; using thought_entry")
+            message = (decision.reply_message or decision.thought_entry).strip()
+            thread_id = await self._ledger.create_thread(
+                f"Partner Ping: {message[:60]}", "AGENT", status="Completed"
+            )
+            entry_id = await self._ledger.create(
+                "ledger_entries",
+                thread_id=thread_id,
+                tag="FAKTA",
+                content=message,
+                token_count=self._compiler.estimate_tokens(message),
+            )
+            delivered = await self._notice(f"[Partner Ping]: {message}")
+            await self._audit(
+                trace_id=str(uuid.uuid4()),
+                step=1,
+                thread_id=thread_id,
+                trigger="CURIOSITY",
+                origin="AGENT",
+                model=self._model_name(),
+                prompt=prompt,
+                prompt_tokens=int((usage or {}).get("prompt_tokens", 0)),
+                cot=decision.reasoning,
+                action="REPLY_USER",
+                response=message,
+                response_tokens=int((usage or {}).get("completion_tokens", 0)),
+                outcome="SUCCESS" if delivered else "FAILED",
+                result_table="ledger_entries",
+                result_id=entry_id,
+            )
             return
-            
+
         thread_id = await self._ledger.create_thread(
             f"Curiosity: {decision.thought_entry[:60]}",
             "AGENT",
@@ -318,13 +350,16 @@ class Runtime:
             logger.exception("audit write failed")
             return None
 
-    async def _notice(self, message: str) -> None:
+    async def _notice(self, message: str) -> bool:
         if self._notify is None:
-            return
+            return False
         try:
             await self._notify(message)
         except Exception:
-            logger.exception("pause notification failed")
+            logger.exception("notification failed")
+            return False
+        logger.info("notification sent chars=%s", len(message))
+        return True
 
     def _pause_text(self, metric: str, *, agent_only: bool) -> str:
         return self._pause_controller.pause_text(metric, agent_only=agent_only)
@@ -354,7 +389,19 @@ class Runtime:
 
     async def _tool_catalog_prompt(self) -> str:
         rows = await self._ledger.list_plugins("ATELIER", include_archived=False)
-        return build_extra_tools_prompt(rows, self._archived_plugins_dir)
+        # run_plugin caches lazily loaded Tier 2 plugins here, so catalog names
+        # are excluded to keep only the configured core tools.
+        core_rows = [
+            {
+                "plugin_name": name,
+                "description_summary": getattr(plugin, "description", name),
+            }
+            for name, plugin in self._plugins.items()
+            if name not in self._plugin_catalog
+        ]
+        return build_extra_tools_prompt(
+            rows, self._archived_plugins_dir, core_rows
+        )
 
     async def sync_plugin_registry(self) -> None:
         """Seed SQL from disk once per startup; SQL then owns is_archived."""
@@ -926,9 +973,13 @@ class Runtime:
             if entries
             else thread.get("expected_output") or f"Lanjutkan misi: {thread['title']}"
         )
-        return await self.handle_mission(
+        reply = await self.handle_mission(
             thread_id, query, record_request=False, trigger="SCHEDULER_RESUME"
         )
+        thread = await self._ledger.read("ledger_threads", thread_id)
+        if reply and thread is not None and thread.get("status") == "Completed":
+            await self._notice(reply)
+        return reply
 
     async def scheduled_tick(self, now: datetime | None = None) -> Any:
         await self._scheduled_task_runner.tick(now)

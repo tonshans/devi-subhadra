@@ -2,7 +2,7 @@ agent_name: "devi-subhadra"
 # Tier-1 plugin yang selalu aktif. Kalau field ini dihilangkan, daftar default
 # dipakai: file_manager, sandbox_executor, register_new_skill, equip_tool,
 # scheduler. Isi [] untuk membuat semua plugin lewat katalog equip_tool.
-# core_plugins: ["file_manager", "sandbox_executor", "register_new_skill", "equip_tool", "scheduler"]
+core_plugins: ["file_manager", "sandbox_executor", "register_new_skill", "equip_tool", "scheduler"]
 execution_mode: "local" # Enum: "lxc" | "local"
 db_type: "sqlite" # Enum: "sqlite" | "postgres"
 sqlite_path: "./data/devi_subhadra.db"
@@ -13,7 +13,7 @@ fallback_sqlite_path: "./data/devi_subhadra.db"
 # InnerMonologue runs once every N scheduler ticks (60s each); 5 = every 5 minutes.
 monologue_every_cycles: 3
 # LLM curiosity cycles per day. 0 turns proactive thinking off.
-curiosity_daily_limit: 12
+curiosity_daily_limit: 24
 # One audit_logs row per agent step (prompt, CoT, response, cost).
 audit_enabled: true
 # Empty HALT or STOP file in this directory stops agent work until removed.
@@ -28,7 +28,7 @@ budget:
 rate_limits:
   provider: "gemini" # Enum: "gemini" | "openrouter"
   # 0 = unlimited. Global limits cover every request (human + agent).
-  rpm_limit: 15
+  rpm_limit: 14
   tpm_limit: 250000
   rpd_limit: 500
   tpd_limit: 2000000
@@ -43,15 +43,15 @@ rate_limits:
 gemini_keys:
   - id: "primary"
     env: "GEMINI_API_KEY_PRIMARY"
-    rpm_limit: 15
-    tpm_limit: 250000
-    rpd_limit: 1500
+    rpm_limit: 14
+    tpm_limit: 200000
+    rpd_limit: 500
     tpd_limit: 10000000
   - id: "secondary"
     env: "GEMINI_API_KEY_SECONDARY"
-    rpm_limit: 15
-    tpm_limit: 250000
-    rpd_limit: 1500
+    rpm_limit: 14
+    tpm_limit: 200000
+    rpd_limit: 500
     tpd_limit: 10000000
 
 models:

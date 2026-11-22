@@ -233,8 +233,11 @@ def test_extra_tools_prompt_combines_catalog_and_anti_amnesia_sop():
     prompt = build_extra_tools_prompt(
         [{"plugin_name": "echo", "description_summary": "Echo the payload."}],
         "/mnt/agent_atelier/archived_plugins",
+        [{"plugin_name": "file_manager", "description_summary": "Read files."}],
     )
 
+    assert "[ALAT INTI]" in prompt
+    assert "- file_manager: Read files." in prompt
     assert "[KATALOG ALAT EKSTRA]" in prompt
     assert "- echo: Echo the payload." in prompt
     assert "equip_tool" in prompt

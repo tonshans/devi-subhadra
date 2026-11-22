@@ -18,8 +18,20 @@ _CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
 async def _setup(tmp_path):
     ledger = CognitiveLedger(tmp_path / "ledger.db")
     await ledger.initialize()
-    governor = BudgetGovernor(2.50)
-    ctx = CommandContext(ledger, governor, load_config(_CONFIG))
+    settings = load_config(_CONFIG)
+    governor = BudgetGovernor(
+        settings.budget.max_initiative_budget_usd,
+        settings.budget.core_task_ratio,
+        settings.budget.atelier_ratio,
+        settings.rate_limits.rpm_limit,
+        settings.rate_limits.tpm_limit,
+        settings.rate_limits.throttle_threshold_ratio,
+        rpd_limit=settings.rate_limits.rpd_limit,
+        tpd_limit=settings.rate_limits.tpd_limit,
+        budget_ratio_agent=settings.rate_limits.budget_ratio_agent,
+        agent_freetime=settings.rate_limits.agent_freetime,
+    )
+    ctx = CommandContext(ledger, governor, settings)
     return ledger, governor, ctx
 
 
@@ -59,15 +71,19 @@ def test_status_reads_state_without_llm(tmp_path):
         assert "agent: devi-subhadra" in reply
         assert "state: running" in reply
         assert "db: sqlite" in reply
-        assert "model: gemini-2.5-flash" in reply
+        assert (
+            f"model: {ctx.settings.models.tier_2_heavy} "
+            f"(light: {ctx.settings.models.tier_1_light})"
+        ) in reply
         assert "context: 123/30000 tokens" in reply
-        assert "core $1.7500 left of $1.75" in reply
-        assert "rpm 0/60" in reply
-        assert "tpm 0/120000" in reply
-        assert "rpd 0/unlimited" in reply
-        assert "tpd 0/unlimited" in reply
+        assert "core $1.2500 left of $1.25" in reply
+        assert "atelier $1.2500 left of $1.25" in reply
+        assert "rpm 0/14" in reply
+        assert "tpm 0/250000" in reply
+        assert "rpd 0/500" in reply
+        assert "tpd 0/2000000" in reply
         assert "agent share:" in reply
-        assert "budget ratio: human 0% (reserved minimum) | agent 100%" in reply
+        assert "budget ratio: human 60% (reserved minimum) | agent 40%" in reply
         assert "agent freetime: off" in reply
         assert "threads: 1 active" in reply
         assert "last activity: " in reply
@@ -201,6 +217,74 @@ def test_trace_command_prints_the_audit_trail(tmp_path):
         assert "where: ledger_entries/entry-1" in text
         assert "no audit rows" in await dispatch("/trace nope", ctx)
         assert "usage: /trace" in await dispatch("/trace", ctx)
+
+    asyncio.run(scenario())
+
+
+def test_thread_command_lists_ids_and_filters_status(tmp_path):
+    async def scenario():
+        ledger, _, ctx = await _setup(tmp_path)
+        active = await ledger.create_thread("Active mission", "HUMAN")
+        completed = await ledger.create_thread(
+            "Done mission", "HUMAN", status="Completed"
+        )
+        paused = await ledger.create_thread(
+            "Paused mission", "AGENT", status="Paused"
+        )
+
+        text = await dispatch("/thread", ctx)
+
+        assert "threads: 3 of 3 (status=all" in text
+        for thread_id in (active, completed, paused):
+            assert thread_id in text
+
+        filtered = await dispatch("/thread active", ctx)
+        assert active in filtered
+        assert completed not in filtered
+        assert paused not in filtered
+        assert "status=Active" in filtered
+
+        assert "usage: /thread" in await dispatch("/thread bogus", ctx)
+        help_text = await dispatch("/thread help", ctx)
+        assert "latest 20 threads" in help_text
+        assert "Active | Paused | Completed | Archived" in help_text
+
+    asyncio.run(scenario())
+
+
+def test_thread_command_caps_output_at_latest_20(tmp_path):
+    async def scenario():
+        ledger, _, ctx = await _setup(tmp_path)
+        ids = []
+        for index in range(25):
+            thread_id = await ledger.create_thread(f"Mission {index:02d}", "AGENT")
+            await ledger.update(
+                "ledger_threads",
+                thread_id,
+                created_at=f"2026-11-21 00:00:{index:02d}.000000",
+            )
+            ids.append(thread_id)
+
+        text = await dispatch("/thread", ctx)
+
+        assert "threads: 20 of 25 (status=all" in text
+        assert "truncated: 5 older thread(s) hidden" in text
+        assert ids[-1] in text
+        assert ids[5] in text
+        assert ids[4] not in text
+        assert len(text.splitlines()) == 22
+
+    asyncio.run(scenario())
+
+
+def test_thread_command_flattens_multiline_titles(tmp_path):
+    async def scenario():
+        ledger, _, ctx = await _setup(tmp_path)
+        await ledger.create_thread("Line one\nLine two", "HUMAN")
+
+        text = await dispatch("/thread", ctx)
+
+        assert "Line one Line two" in text
 
     asyncio.run(scenario())
 

@@ -130,7 +130,7 @@ def test_bundled_config_yaml_matches_spec():
     assert config.execution_mode in {"lxc", "local"}
     assert config.db_type in {"sqlite", "postgres"}
     assert config.rate_limits.provider in {"gemini", "openrouter"}
-    assert config.rate_limits.rpd_limit == 1000
+    assert config.rate_limits.rpd_limit == 500
     assert config.rate_limits.tpd_limit == 2000000
     assert config.rate_limits.budget_ratio_agent == 0.40
     assert config.rate_limits.agent_freetime is False

@@ -1,4 +1,4 @@
-"""Return a Tier 2 plugin cheat sheet: description plus input schema."""
+"""Return a plugin cheat sheet: description plus input schema."""
 
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ class EquipToolInput(StrictBaseModel):
     target_plugin_name: str = Field(
         ...,
         pattern=r"^[a-z][a-z0-9_]*$",
-        description="Nama plugin Atelier yang ingin dipakai.",
+        description="Nama plugin yang ingin dipakai (Atelier maupun inti).",
     )
 
 
 class EquipTool(BaseAgentPlugin):
     plugin_name = "equip_tool"
     description = (
-        "Baca cheat sheet (deskripsi + skema input) plugin Atelier sebelum "
+        "Baca cheat sheet (deskripsi + skema input) plugin sebelum "
         "memanggilnya. Tanpa ini agent hanya tahu nama dan fungsi singkatnya."
     )
     input_schema = EquipToolInput

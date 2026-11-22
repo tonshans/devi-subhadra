@@ -292,6 +292,53 @@ async def trace(ctx: CommandContext, args: str) -> str:
     return "\n".join(lines)
 
 
+@command("/thread", "List thread ids for /trace, newest first (max 20).")
+async def thread_list(ctx: CommandContext, args: str) -> str:
+    statuses = {
+        "active": "Active",
+        "paused": "Paused",
+        "completed": "Completed",
+        "archived": "Archived",
+    }
+    raw = args.strip()
+    if raw.lower() in {"help", "-h", "--help", "?"}:
+        return (
+            "usage: /thread [status]\n"
+            "status: all (default) | Active | Paused | Completed | Archived\n"
+            "shows the latest 20 threads, newest first, with the full thread_id "
+            "for /trace."
+        )
+    status = None
+    if raw and raw.lower() != "all":
+        status = statuses.get(raw.lower())
+        if status is None:
+            return (
+                "usage: /thread [all|Active|Paused|Completed|Archived] "
+                "(or /thread help)"
+            )
+    rows = await ctx.ledger.list_threads(status=status)
+    if not rows:
+        return f"no threads (status={status or 'all'})"
+    rows.sort(key=lambda row: (row["created_at"], row["thread_id"]), reverse=True)
+    shown = rows[:20]
+    lines = [
+        f"threads: {len(shown)} of {len(rows)} (status={status or 'all'}, "
+        "newest first)"
+    ]
+    for row in shown:
+        title = " ".join(str(row["title"]).split())[:60]
+        lines.append(
+            f"{row['created_at']} {row['status']:<9} {row['origin']:<5} "
+            f"{row['thread_id']} try={row['attempt_count'] or 0} {title}"
+        )
+    if len(rows) > len(shown):
+        lines.append(
+            f"truncated: {len(rows) - len(shown)} older thread(s) hidden; "
+            "filter with /thread <status> or see /thread help"
+        )
+    return "\n".join(lines)
+
+
 @command("/resume-agent", "Resume agent activity and LLM calls.")
 async def resume_agent(ctx: CommandContext, _args: str) -> str:
     # Flag first: new missions are allowed once the queue is reopened.

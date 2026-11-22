@@ -8,6 +8,8 @@ Usage (from the repository root):
 Commands (same ones Telegram receives):
 
     /status        agent, uptime, budget, limits, usage, last activity
+    /thread        latest 20 thread ids for /trace; /thread <status>
+    /trace         audit trail for a thread id or trace id
     /budget-ratio  show or set the agent share, e.g. /budget-ratio 60 40
     /agent-freetime on|off|status   let initiatives use the full limit
     /pause-agent   stop all agent activity and LLM calls
@@ -114,8 +116,8 @@ async def main() -> None:
         f"REPL: {datetime.now():%Y-%m-%d %H:%M:%S}", "HUMAN"
     )
     print(
-        f"{settings.agent_name} REPL. Commands: /status, /budget-ratio, "
-        "/agent-freetime, /pause-agent, /resume-agent, /quit."
+        f"{settings.agent_name} REPL. Commands: /status, /thread, /trace, "
+        "/budget-ratio, /agent-freetime, /pause-agent, /resume-agent, /quit."
     )
     try:
         await run_session(runtime, ctx, thread_id, read=_read_line, write=print)

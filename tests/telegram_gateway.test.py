@@ -62,6 +62,39 @@ def test_send_response_sends_every_chunk_via_sender():
     asyncio.run(scenario())
 
 
+def test_notify_chunks_long_message_to_allowlisted_chat():
+    async def scenario():
+        sent = []
+
+        async def sender(chat_id, message):
+            sent.append((chat_id, message))
+
+        gateway = TelegramGateway(sender=sender, allowed_chat_id=42)
+        text = "word " * 1900
+        await gateway.notify(text)
+
+        assert len(sent) == 3
+        assert all(chat_id == 42 for chat_id, _ in sent)
+        assert "".join(message for _, message in sent) == text
+
+    asyncio.run(scenario())
+
+
+def test_notify_skips_empty_message():
+    async def scenario():
+        sent = []
+
+        async def sender(chat_id, message):
+            sent.append(message)
+
+        gateway = TelegramGateway(sender=sender, allowed_chat_id=42)
+        await gateway.notify("")
+
+        assert sent == []
+
+    asyncio.run(scenario())
+
+
 def test_oversized_response_is_saved_to_workspace(tmp_path):
     async def scenario():
         sent = []

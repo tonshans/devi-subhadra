@@ -177,7 +177,8 @@ class TelegramGateway:
         """Push a system notice to the allowlisted chat (no user input needed)."""
         if self._allowed_chat_id is None:
             raise RuntimeError("Telegram chat allowlist is not configured.")
-        await self._send(self._allowed_chat_id, message)
+        for chunk in chunk_message(message):
+            await self._send(self._allowed_chat_id, chunk)
 
 
 router = APIRouter(prefix="/api/webhook", tags=["telegram"])

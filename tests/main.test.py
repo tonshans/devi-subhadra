@@ -102,7 +102,8 @@ def test_webhook_logs_inbound_update(tmp_path, caplog):
     assert "telegram update 501 chat=123" in caplog.text
 
 
-def test_build_gateway_reads_telegram_secrets(monkeypatch):
+def test_build_gateway_reads_telegram_secrets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_ID", "123")
 
@@ -149,6 +150,7 @@ def test_build_runtime_wires_plugins_worker_and_wake_up(tmp_path):
 def test_build_runtime_requires_gemini_secret_without_worker(
     tmp_path, monkeypatch
 ):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("GEMINI_API_KEY_PRIMARY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY_SECONDARY", raising=False)
     settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
@@ -169,6 +171,7 @@ def test_build_runtime_requires_gemini_secret_without_worker(
 def test_build_runtime_skips_gemini_keys_without_secret(
     tmp_path, monkeypatch
 ):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GEMINI_API_KEY_PRIMARY", "key-one")
     monkeypatch.delenv("GEMINI_API_KEY_SECONDARY", raising=False)
     settings = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
